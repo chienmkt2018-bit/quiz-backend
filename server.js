@@ -38,7 +38,7 @@ app.post('/api/login', (req, res) => {
     
     // Mặc định tài khoản admin
     if (role === 'admin') {
-        const adminData = getFile('admin.json', { username: 'admin', password: '123' });
+        const adminData = getFile('admin.json', { username: 'hangmoon', password: '041194' });
         if (username === adminData.username && password === adminData.password) {
             return res.json({ success: true, username, role: 'admin' });
         }
