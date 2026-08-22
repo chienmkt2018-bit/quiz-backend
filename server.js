@@ -8,7 +8,6 @@ app.use(express.json());
 
 // Kết nối Database. URI lấy từ biến môi trường của Render
 mongoose.connect(process.env.MONGODB_URI)
-  mongodb+srv://chienhang:27121990@hoctap.zidz6ov.mongodb.net/?appName=hoctap
   .then(() => console.log('✅ Đã kết nối MongoDB!'))
   .catch(err => console.error('❌ Lỗi kết nối DB:', err));
 
