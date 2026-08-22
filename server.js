@@ -1,180 +1,157 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
+const mongoose = require('mongoose');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Khởi tạo thư mục lưu dữ liệu Database (JSON)
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+// Kết nối Database. URI lấy từ biến môi trường của Render
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log('✅ Đã kết nối MongoDB!'))
+  .catch(err => console.error('❌ Lỗi kết nối DB:', err));
 
-// Hàm đọc và ghi file JSON
-const getFile = (filename, defaultData) => {
-    const filepath = path.join(DATA_DIR, filename);
-    if (!fs.existsSync(filepath)) fs.writeFileSync(filepath, JSON.stringify(defaultData, null, 2));
-    return JSON.parse(fs.readFileSync(filepath, 'utf8'));
-};
-const saveFile = (filename, data) => fs.writeFileSync(path.join(DATA_DIR, filename), JSON.stringify(data, null, 2));
+// ================= CẤU TRÚC DATABASE ================= //
+const User = mongoose.model('User', new mongoose.Schema({
+    username: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    fullname: String,
+    role: { type: String, default: 'student' },
+    mcion: { type: Number, default: 0 }
+}));
+
+const AdminAuth = mongoose.model('AdminAuth', new mongoose.Schema({
+    username: { type: String, default: 'admin' },
+    password: { type: String, default: '123' }
+}));
+
+const Exam = mongoose.model('Exam', new mongoose.Schema({
+    examCode: { type: String, required: true, unique: true },
+    timeLimit: { type: Number, default: 0 },
+    questions: Array
+}));
+
+const History = mongoose.model('History', new mongoose.Schema({
+    username: String, fullname: String, examCode: String,
+    correctCount: Number, totalQuestions: Number, score: String,
+    time: String, earnedMcion: Number
+}));
+
+const UI = mongoose.model('UI', new mongoose.Schema({
+    title: String, banner: String, primaryColor: String, bgColor: String
+}));
 
 // ================= API ENDPOINTS ================= //
 
-// 1. Quản lý Tài khoản (Login / Register)
-app.post('/api/register', (req, res) => {
-    const { fullname, username, password } = req.body;
-    let users = getFile('users.json', []);
-    if (users.find(u => u.username === username)) {
-        return res.json({ success: false, message: 'Tên đăng nhập đã tồn tại!' });
-    }
-    users.push({ fullname, username, password, role: 'student', mcion: 0 });
-    saveFile('users.json', users);
-    res.json({ success: true });
+// 1. Quản lý Tài khoản
+app.post('/api/register', async (req, res) => {
+    try {
+        const { fullname, username, password } = req.body;
+        const exists = await User.findOne({ username });
+        if (exists) return res.json({ success: false, message: 'Tên đăng nhập đã tồn tại!' });
+        await User.create({ fullname, username, password });
+        res.json({ success: true });
+    } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     const { username, password, role } = req.body;
-    
-    // Mặc định tài khoản admin
     if (role === 'admin') {
-        const adminData = getFile('admin.json', { username: 'hangmoon', password: '041194' });
-        if (username === adminData.username && password === adminData.password) {
+        let admin = await AdminAuth.findOne();
+        if (!admin) admin = await AdminAuth.create({ username: 'admin', password: '123' });
+        if (username === admin.username && password === admin.password) {
             return res.json({ success: true, username, role: 'admin' });
         }
         return res.json({ success: false, message: 'Sai tài khoản hoặc mật khẩu Admin!' });
     }
-
-    // Tài khoản học sinh
-    let users = getFile('users.json', []);
-    const user = users.find(u => u.username === username && u.password === password);
-    if (user) {
-        res.json({ success: true, username: user.username, fullname: user.fullname, role: 'student' });
-    } else {
-        res.json({ success: false, message: 'Sai tài khoản hoặc mật khẩu Học sinh!' });
-    }
+    const user = await User.findOne({ username, password });
+    if (user) res.json({ success: true, username: user.username, fullname: user.fullname, role: 'student' });
+    else res.json({ success: false, message: 'Sai thông tin học sinh!' });
 });
 
-// 2. Quản lý Đề Thi (Thêm, Sửa, Xóa, Lấy danh sách)
-app.get('/api/exams', (req, res) => {
-    const exams = getFile('exams.json', {});
-    res.json(Object.keys(exams)); // Trả về danh sách mã đề
+// 2. Quản lý Đề Thi
+app.get('/api/exams', async (req, res) => {
+    const exams = await Exam.find({}, 'examCode');
+    res.json(exams.map(e => e.examCode));
 });
 
-app.get('/api/exams/:code', (req, res) => {
-    const exams = getFile('exams.json', {});
-    const examData = exams[req.params.code] || { timeLimit: 0, questions: [] };
-    res.json(examData);
+app.get('/api/exams/:code', async (req, res) => {
+    const exam = await Exam.findOne({ examCode: req.params.code });
+    res.json(exam || { timeLimit: 0, questions: [] });
 });
 
-app.post('/api/exams', (req, res) => {
+app.post('/api/exams', async (req, res) => {
     const { examCode, timeLimit, questions } = req.body;
-    let exams = getFile('exams.json', {});
-    exams[examCode] = { timeLimit: timeLimit || 0, questions: questions || [] };
-    saveFile('exams.json', exams);
+    await Exam.findOneAndUpdate({ examCode }, { timeLimit, questions }, { upsert: true });
     res.json({ success: true });
 });
 
-app.put('/api/exams/:code', (req, res) => {
+app.put('/api/exams/:code', async (req, res) => {
     const { timeLimit, questions } = req.body;
-    let exams = getFile('exams.json', {});
-    if (exams[req.params.code]) {
-        exams[req.params.code] = { timeLimit: timeLimit || 0, questions: questions || [] };
-        saveFile('exams.json', exams);
-        res.json({ success: true });
-    } else {
-        res.status(404).json({ success: false, message: 'Không tìm thấy mã đề!' });
-    }
-});
-
-app.delete('/api/exams/:code', (req, res) => {
-    let exams = getFile('exams.json', {});
-    if (exams[req.params.code]) {
-        delete exams[req.params.code];
-        saveFile('exams.json', exams);
-        res.json({ success: true });
-    } else {
-        res.status(404).json({ success: false, message: 'Không tìm thấy mã đề!' });
-    }
-});
-
-// 3. Quản lý Điểm số / Lịch sử / Mcion
-app.post('/api/submit', (req, res) => {
-    let history = getFile('history.json', []);
-    history.push(req.body); // req.body chứa thông tin bài thi
-    saveFile('history.json', history);
-
-    // Cộng Mcion
-    let users = getFile('users.json', []);
-    const userIndex = users.findIndex(u => u.username === req.body.username);
-    if (userIndex !== -1) {
-        users[userIndex].mcion = (users[userIndex].mcion || 0) + req.body.earnedMcion;
-        saveFile('users.json', users);
-    }
+    await Exam.findOneAndUpdate({ examCode: req.params.code }, { timeLimit, questions });
     res.json({ success: true });
 });
 
-app.get('/api/history', (req, res) => {
-    const history = getFile('history.json', []);
-    // Đảo ngược để lịch sử mới nhất lên đầu
-    res.json(history.reverse());
+app.delete('/api/exams/:code', async (req, res) => {
+    await Exam.deleteOne({ examCode: req.params.code });
+    res.json({ success: true });
 });
 
-app.get('/api/mcion/:username', (req, res) => {
-    const users = getFile('users.json', []);
-    const user = users.find(u => u.username === req.params.username);
-    res.json({ balance: user ? (user.mcion || 0) : 0 });
+// 3. Lịch Sử & Mcion
+app.post('/api/submit', async (req, res) => {
+    await History.create(req.body);
+    await User.findOneAndUpdate({ username: req.body.username }, { $inc: { mcion: req.body.earnedMcion } });
+    res.json({ success: true });
 });
 
-app.post('/api/mcion/grant', (req, res) => {
-    const { username, amount } = req.body;
-    let users = getFile('users.json', []);
-    const user = users.find(u => u.username === username);
-    if (user) {
-        user.mcion = (user.mcion || 0) + amount;
-        saveFile('users.json', users);
+app.get('/api/history', async (req, res) => {
+    const history = await History.find().sort({ _id: -1 }); // Lịch sử mới nhất lên đầu
+    res.json(history);
+});
+
+app.get('/api/mcion/:username', async (req, res) => {
+    const user = await User.findOne({ username: req.params.username });
+    res.json({ balance: user ? user.mcion : 0 });
+});
+
+app.post('/api/mcion/grant', async (req, res) => {
+    const user = await User.findOneAndUpdate({ username: req.body.username }, { $inc: { mcion: req.body.amount } }, { new: true });
+    if (user) res.json({ success: true, balance: user.mcion });
+    else res.json({ success: false, message: 'Không tìm thấy!' });
+});
+
+app.post('/api/mcion/buy', async (req, res) => {
+    const user = await User.findOne({ username: req.body.username });
+    if (user && user.mcion >= req.body.cost) {
+        user.mcion -= req.body.cost;
+        await user.save();
         res.json({ success: true, balance: user.mcion });
-    } else {
-        res.json({ success: false, message: 'Không tìm thấy học sinh!' });
-    }
+    } else res.json({ success: false, message: 'Không đủ Mcion!' });
 });
 
-app.post('/api/mcion/buy', (req, res) => {
-    const { username, cost } = req.body;
-    let users = getFile('users.json', []);
-    const user = users.find(u => u.username === username);
-    if (user && user.mcion >= cost) {
-        user.mcion -= cost;
-        saveFile('users.json', users);
-        res.json({ success: true, balance: user.mcion });
-    } else {
-        res.json({ success: false, message: 'Không đủ Mcion để đổi!' });
-    }
+// 4. UI & Admin Settings
+app.get('/api/ui', async (req, res) => {
+    let ui = await UI.findOne();
+    if (!ui) ui = await UI.create({ title: "Hệ Thống Trắc Nghiệm Online", banner: "", primaryColor: "#3498db", bgColor: "#f4f7f6" });
+    res.json(ui);
 });
 
-// 4. Cấu hình UI & Admin
-app.get('/api/ui', (req, res) => {
-    const uiData = getFile('ui.json', { 
-        title: "Hệ Thống Trắc Nghiệm Online", 
-        banner: "", 
-        primaryColor: "#3498db", 
-        bgColor: "#f4f7f6" 
-    });
-    res.json(uiData);
-});
-
-app.post('/api/ui', (req, res) => {
-    saveFile('ui.json', req.body);
+app.post('/api/ui', async (req, res) => {
+    let ui = await UI.findOne();
+    if (ui) await UI.updateOne({}, req.body);
+    else await UI.create(req.body);
     res.json({ success: true });
 });
 
-app.post('/api/admin/change', (req, res) => {
-    const { newAdminUser, newAdminPass } = req.body;
-    saveFile('admin.json', { username: newAdminUser, password: newAdminPass });
+app.post('/api/admin/change', async (req, res) => {
+    let admin = await AdminAuth.findOne();
+    if (admin) {
+        admin.username = req.body.newAdminUser;
+        admin.password = req.body.newAdminPass;
+        await admin.save();
+    }
     res.json({ success: true });
 });
 
-const PORT = 3000;
-app.listen(PORT, () => {
-    console.log(`✅ Backend Server đang chạy tại http://localhost:${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server đang chạy tại PORT ${PORT}`));
