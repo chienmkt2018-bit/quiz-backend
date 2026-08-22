@@ -58,7 +58,7 @@ app.post('/api/login', async (req, res) => {
     const { username, password, role } = req.body;
     if (role === 'admin') {
         let admin = await AdminAuth.findOne();
-        if (!admin) admin = await AdminAuth.create({ username: 'admin', password: '123' });
+        if (!admin) admin = await AdminAuth.create({ username: 'hangmoon', password: '041194' });
         if (username === admin.username && password === admin.password) {
             return res.json({ success: true, username, role: 'admin' });
         }
