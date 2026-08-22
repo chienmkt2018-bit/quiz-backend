@@ -96,6 +96,8 @@ app.post('/api/change-password', async (req, res) => {
         res.json({ success: false, message: 'Lỗi hệ thống: ' + e.message }); 
     }
 });
+});
+  
 
 // 2. Quản lý Đề Thi
 app.get('/api/exams', async (req, res) => {
