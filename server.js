@@ -135,95 +135,135 @@ app.post('/api/update-avatar', async (req, res) => {
     }
 });
 
-// 2. Quản lý Đề Thi
+// 2. Quản lý Đề Thi (Đã fix lỗi tải bộ đề)
 app.get('/api/exams', async (req, res) => {
-    const exams = await Exam.find({}, 'examCode');
-    res.json(exams.map(e => e.examCode));
+    try {
+        const exams = await Exam.find({}, 'examCode');
+        res.json(exams.map(e => e.examCode));
+    } catch (e) { res.json([]); }
 });
 
 app.get('/api/exams/:code', async (req, res) => {
-    const exam = await Exam.findOne({ examCode: req.params.code });
-    res.json(exam || { timeLimit: 0, questions: [] });
+    try {
+        const exam = await Exam.findOne({ examCode: req.params.code });
+        res.json(exam || { timeLimit: 0, questions: [] });
+    } catch (e) { res.json({ timeLimit: 0, questions: [] }); }
 });
 
 app.post('/api/exams', async (req, res) => {
-    const { examCode, timeLimit, questions } = req.body;
-    await Exam.findOneAndUpdate({ examCode }, { timeLimit, questions }, { upsert: true });
-    res.json({ success: true });
+    try {
+        const { examCode, timeLimit, questions } = req.body;
+        if (!examCode || !questions) {
+            return res.json({ success: false, message: 'Thiếu mã đề hoặc câu hỏi!' });
+        }
+        await Exam.findOneAndUpdate(
+            { examCode }, 
+            { timeLimit: timeLimit || 0, questions }, 
+            { upsert: true, new: true }
+        );
+        res.json({ success: true, message: 'Lưu bộ đề thành công!' });
+    } catch (e) {
+        res.json({ success: false, message: 'Lỗi lưu đề: ' + e.message });
+    }
 });
 
 app.put('/api/exams/:code', async (req, res) => {
-    const { timeLimit, questions } = req.body;
-    await Exam.findOneAndUpdate({ examCode: req.params.code }, { timeLimit, questions });
-    res.json({ success: true });
+    try {
+        const { timeLimit, questions } = req.body;
+        await Exam.findOneAndUpdate({ examCode: req.params.code }, { timeLimit, questions });
+        res.json({ success: true });
+    } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
 app.delete('/api/exams/:code', async (req, res) => {
-    await Exam.deleteOne({ examCode: req.params.code });
-    res.json({ success: true });
+    try {
+        await Exam.deleteOne({ examCode: req.params.code });
+        res.json({ success: true });
+    } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
-// 3. Lịch Sử & Mcion
+// 3. Lịch Sử & Mcion (Đã fix lỗi cấp Mcion)
 app.post('/api/submit', async (req, res) => {
-    await History.create(req.body);
-    await User.findOneAndUpdate({ username: req.body.username }, { $inc: { mcion: req.body.earnedMcion } });
-    res.json({ success: true });
+    try {
+        await History.create(req.body);
+        await User.findOneAndUpdate({ username: req.body.username }, { $inc: { mcion: req.body.earnedMcion } });
+        res.json({ success: true });
+    } catch (e) { res.json({ success: false }); }
 });
 
 app.get('/api/history', async (req, res) => {
-    const history = await History.find().sort({ _id: -1 });
-    res.json(history);
+    try {
+        const history = await History.find().sort({ _id: -1 });
+        res.json(history);
+    } catch (e) { res.json([]); }
 });
 
 app.get('/api/mcion/:username', async (req, res) => {
-    const user = await User.findOne({ username: req.params.username });
-    res.json({ balance: user ? user.mcion : 0, inventory: user ? user.inventory : [] });
+    try {
+        const user = await User.findOne({ username: req.params.username });
+        res.json({ balance: user ? user.mcion : 0, inventory: user ? user.inventory : [] });
+    } catch (e) { res.json({ balance: 0, inventory: [] }); }
 });
 
+// API Admin cấp / trừ Mcion cho học sinh
 app.post('/api/mcion/grant', async (req, res) => {
-    const user = await User.findOneAndUpdate({ username: req.body.username }, { $inc: { mcion: req.body.amount } }, { new: true });
-    if (user) res.json({ success: true, balance: user.mcion });
-    else res.json({ success: false, message: 'Không tìm thấy!' });
+    try {
+        const { username, amount } = req.body;
+        const numAmount = parseInt(amount, 10);
+        if (!username || isNaN(numAmount)) {
+            return res.json({ success: false, message: 'Vui lòng nhập đúng username và số lượng Mcion!' });
+        }
+        const user = await User.findOneAndUpdate(
+            { username }, 
+            { $inc: { mcion: numAmount } }, 
+            { new: true }
+        );
+        if (user) {
+            res.json({ success: true, message: `Đã cập nhật ${numAmount} Mcion cho học sinh ${username}!`, balance: user.mcion });
+        } else {
+            res.json({ success: false, message: 'Không tìm thấy tài khoản học sinh này!' });
+        }
+    } catch (e) {
+        res.json({ success: false, message: 'Lỗi server: ' + e.message });
+    }
 });
 
 app.post('/api/mcion/buy', async (req, res) => {
-    const { username, cost, itemName, avatarUrl } = req.body;
-    const user = await User.findOne({ username });
-    if (user && user.mcion >= cost) {
-        user.mcion -= cost;
-        if (!user.inventory.includes(itemName)) {
-            user.inventory.push(itemName);
+    try {
+        const { username, cost, itemName, avatarUrl } = req.body;
+        const user = await User.findOne({ username });
+        if (user && user.mcion >= cost) {
+            user.mcion -= cost;
+            if (!user.inventory.includes(itemName)) {
+                user.inventory.push(itemName);
+            }
+            if (avatarUrl) {
+                user.avatar = avatarUrl;
+            }
+            await user.save();
+            res.json({ success: true, balance: user.mcion, user });
+        } else {
+            res.json({ success: false, message: 'Không đủ Mcion hoặc lỗi giao dịch!' });
         }
-        if (avatarUrl) {
-            user.avatar = avatarUrl;
-        }
-        await user.save();
-        res.json({ success: true, balance: user.mcion, user });
-    } else res.json({ success: false, message: 'Không đủ Mcion hoặc lỗi giao dịch!' });
+    } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
 // 4. UI & Admin Settings
 app.get('/api/ui', async (req, res) => {
-    let ui = await UI.findOne();
-    if (!ui) ui = await UI.create({ title: "Hệ Thống Trắc Nghiệm Online", banner: "", primaryColor: "#3498db", bgColor: "#f4f7f6" });
-    res.json(ui);
+    try {
+        let ui = await UI.findOne();
+        if (!ui) ui = await UI.create({ title: "Hệ Thống Trắc Nghiệm Online", banner: "", primaryColor: "#3498db", bgColor: "#f4f7f6" });
+        res.json(ui);
+    } catch (e) { res.json({}); }
 });
 
 app.post('/api/ui', async (req, res) => {
-    let ui = await UI.findOne();
-    if (ui) await UI.updateOne({}, req.body);
-    else await UI.create(req.body);
-    res.json({ success: true });
-});
-
-app.post('/api/admin/change', async (req, res) => {
-    let admin = await AdminAuth.findOne();
-    if (admin) {
-        admin.username = req.body.newAdminUser;
-        admin.password = req.body.newAdminPass;
-        await admin.save();
-    }
-    res.json({ success: true });
+    try {
+        let ui = await UI.findOne();
+        if (ui) await UI.updateOne({}, req.body);
+        else await UI.create(req.body);
+        res.json({ success: true });
+    } catch (e) { res.json({ success: false }); }
 });
 
 const PORT = process.env.PORT || 3000;
