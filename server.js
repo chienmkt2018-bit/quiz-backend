@@ -67,12 +67,10 @@ app.post('/api/login', async (req, res) => {
     const user = await User.findOne({ username, password });
     if (user) res.json({ success: true, username: user.username, fullname: user.fullname, role: 'student' });
     else res.json({ success: false, message: 'Sai thông tin học sinh!' });
-// API Đổi Mật Khẩu (Dùng chung cho cả Admin và Học Sinh)
+// API Đổi Mật Khẩu
 app.post('/api/change-password', async (req, res) => {
     try {
         const { username, role, oldPassword, newPassword } = req.body;
-        
-        // Nếu là Admin đổi mật khẩu
         if (role === 'admin') {
             const admin = await AdminAuth.findOne();
             if (admin && admin.username === username && admin.password === oldPassword) {
@@ -81,9 +79,7 @@ app.post('/api/change-password', async (req, res) => {
                 return res.json({ success: true, message: 'Đổi mật khẩu Admin thành công!' });
             }
             return res.json({ success: false, message: 'Mật khẩu cũ không chính xác!' });
-        } 
-        // Nếu là Học sinh đổi mật khẩu
-        else {
+        } else {
             const user = await User.findOne({ username, password: oldPassword });
             if (user) {
                 user.password = newPassword;
@@ -94,6 +90,33 @@ app.post('/api/change-password', async (req, res) => {
         }
     } catch (e) { 
         res.json({ success: false, message: 'Lỗi hệ thống: ' + e.message }); 
+    }
+});
+
+// API Cập nhật Avatar (Kiểm tra xem học viên đã sở hữu vật phẩm/khung/avatar đó chưa)
+app.post('/api/update-avatar', async (req, res) => {
+    try {
+        const { username, avatarUrl, itemName } = req.body;
+        const user = await User.findOne({ username });
+        if (!user) return res.json({ success: false, message: 'Không tìm thấy học viên!' });
+
+        // Nếu chọn dùng ảnh mặc định thì cho phép luôn
+        if (avatarUrl === "default") {
+            user.avatar = "https://i.imgur.com/6VBx3io.png";
+            await user.save();
+            return res.json({ success: true, message: 'Đã chuyển về avatar mặc định!', user });
+        }
+
+        // Kiểm tra xem học viên đã mua vật phẩm này trong kho chưa
+        if (!user.inventory.includes(itemName)) {
+            return res.json({ success: false, message: 'Bạn chưa sở hữu vật phẩm này trong cửa hàng!' });
+        }
+
+        user.avatar = avatarUrl;
+        await user.save();
+        res.json({ success: true, message: 'Đổi avatar thành công!', user });
+    } catch (e) {
+        res.json({ success: false, message: 'Lỗi: ' + e.message });
     }
 });
 });
