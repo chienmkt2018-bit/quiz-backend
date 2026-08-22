@@ -17,7 +17,9 @@ const User = mongoose.model('User', new mongoose.Schema({
     password: { type: String, required: true },
     fullname: String,
     role: { type: String, default: 'student' },
-    mcion: { type: Number, default: 0 }
+    mcion: { type: Number, default: 0 },
+    avatar: { type: String, default: "https://i.imgur.com/6VBx3io.png" },
+    inventory: { type: [String], default: [] }
 }));
 
 const AdminAuth = mongoose.model('AdminAuth', new mongoose.Schema({
@@ -43,7 +45,7 @@ const UI = mongoose.model('UI', new mongoose.Schema({
 
 // ================= API ENDPOINTS ================= //
 
-// 1. Quản lý Tài khoản
+// 1. Quản lý Tài khoản & Đăng nhập
 app.post('/api/register', async (req, res) => {
     try {
         const { fullname, username, password } = req.body;
@@ -55,18 +57,33 @@ app.post('/api/register', async (req, res) => {
 });
 
 app.post('/api/login', async (req, res) => {
-    const { username, password, role } = req.body;
-    if (role === 'admin') {
-        let admin = await AdminAuth.findOne();
-        if (!admin) admin = await AdminAuth.create({ username: 'hangmoon', password: '041194' });
-        if (username === admin.username && password === admin.password) {
-            return res.json({ success: true, username, role: 'admin' });
+    try {
+        const { username, password, role } = req.body;
+        if (role === 'admin') {
+            let admin = await AdminAuth.findOne();
+            if (!admin) admin = await AdminAuth.create({ username: 'hangmoon', password: '041194' });
+            if (username === admin.username && password === admin.password) {
+                return res.json({ success: true, username, role: 'admin' });
+            }
+            return res.json({ success: false, message: 'Sai tài khoản hoặc mật khẩu Admin!' });
         }
-        return res.json({ success: false, message: 'Sai tài khoản hoặc mật khẩu Admin!' });
+        const user = await User.findOne({ username, password });
+        if (user) {
+            return res.json({ 
+                success: true, 
+                username: user.username, 
+                fullname: user.fullname, 
+                role: 'student',
+                avatar: user.avatar,
+                mcion: user.mcion
+            });
+        }
+        res.json({ success: false, message: 'Sai thông tin học sinh!' });
+    } catch (e) {
+        res.json({ success: false, message: 'Lỗi server: ' + e.message });
     }
-    const user = await User.findOne({ username, password });
-    if (user) res.json({ success: true, username: user.username, fullname: user.fullname, role: 'student' });
-    else res.json({ success: false, message: 'Sai thông tin học sinh!' });
+});
+
 // API Đổi Mật Khẩu
 app.post('/api/change-password', async (req, res) => {
     try {
@@ -93,21 +110,19 @@ app.post('/api/change-password', async (req, res) => {
     }
 });
 
-// API Cập nhật Avatar (Kiểm tra xem học viên đã sở hữu vật phẩm/khung/avatar đó chưa)
+// API Cập nhật Avatar
 app.post('/api/update-avatar', async (req, res) => {
     try {
         const { username, avatarUrl, itemName } = req.body;
         const user = await User.findOne({ username });
         if (!user) return res.json({ success: false, message: 'Không tìm thấy học viên!' });
 
-        // Nếu chọn dùng ảnh mặc định thì cho phép luôn
         if (avatarUrl === "default") {
             user.avatar = "https://i.imgur.com/6VBx3io.png";
             await user.save();
             return res.json({ success: true, message: 'Đã chuyển về avatar mặc định!', user });
         }
 
-        // Kiểm tra xem học viên đã mua vật phẩm này trong kho chưa
         if (!user.inventory.includes(itemName)) {
             return res.json({ success: false, message: 'Bạn chưa sở hữu vật phẩm này trong cửa hàng!' });
         }
@@ -119,8 +134,6 @@ app.post('/api/update-avatar', async (req, res) => {
         res.json({ success: false, message: 'Lỗi: ' + e.message });
     }
 });
-});
-  
 
 // 2. Quản lý Đề Thi
 app.get('/api/exams', async (req, res) => {
@@ -158,13 +171,13 @@ app.post('/api/submit', async (req, res) => {
 });
 
 app.get('/api/history', async (req, res) => {
-    const history = await History.find().sort({ _id: -1 }); // Lịch sử mới nhất lên đầu
+    const history = await History.find().sort({ _id: -1 });
     res.json(history);
 });
 
 app.get('/api/mcion/:username', async (req, res) => {
     const user = await User.findOne({ username: req.params.username });
-    res.json({ balance: user ? user.mcion : 0 });
+    res.json({ balance: user ? user.mcion : 0, inventory: user ? user.inventory : [] });
 });
 
 app.post('/api/mcion/grant', async (req, res) => {
@@ -174,12 +187,19 @@ app.post('/api/mcion/grant', async (req, res) => {
 });
 
 app.post('/api/mcion/buy', async (req, res) => {
-    const user = await User.findOne({ username: req.body.username });
-    if (user && user.mcion >= req.body.cost) {
-        user.mcion -= req.body.cost;
+    const { username, cost, itemName, avatarUrl } = req.body;
+    const user = await User.findOne({ username });
+    if (user && user.mcion >= cost) {
+        user.mcion -= cost;
+        if (!user.inventory.includes(itemName)) {
+            user.inventory.push(itemName);
+        }
+        if (avatarUrl) {
+            user.avatar = avatarUrl;
+        }
         await user.save();
-        res.json({ success: true, balance: user.mcion });
-    } else res.json({ success: false, message: 'Không đủ Mcion!' });
+        res.json({ success: true, balance: user.mcion, user });
+    } else res.json({ success: false, message: 'Không đủ Mcion hoặc lỗi giao dịch!' });
 });
 
 // 4. UI & Admin Settings
