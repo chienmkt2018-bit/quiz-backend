@@ -67,6 +67,34 @@ app.post('/api/login', async (req, res) => {
     const user = await User.findOne({ username, password });
     if (user) res.json({ success: true, username: user.username, fullname: user.fullname, role: 'student' });
     else res.json({ success: false, message: 'Sai thông tin học sinh!' });
+// API Đổi Mật Khẩu (Dùng chung cho cả Admin và Học Sinh)
+app.post('/api/change-password', async (req, res) => {
+    try {
+        const { username, role, oldPassword, newPassword } = req.body;
+        
+        // Nếu là Admin đổi mật khẩu
+        if (role === 'admin') {
+            const admin = await AdminAuth.findOne();
+            if (admin && admin.username === username && admin.password === oldPassword) {
+                admin.password = newPassword;
+                await admin.save();
+                return res.json({ success: true, message: 'Đổi mật khẩu Admin thành công!' });
+            }
+            return res.json({ success: false, message: 'Mật khẩu cũ không chính xác!' });
+        } 
+        // Nếu là Học sinh đổi mật khẩu
+        else {
+            const user = await User.findOne({ username, password: oldPassword });
+            if (user) {
+                user.password = newPassword;
+                await user.save();
+                return res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
+            }
+            return res.json({ success: false, message: 'Mật khẩu cũ không chính xác!' });
+        }
+    } catch (e) { 
+        res.json({ success: false, message: 'Lỗi hệ thống: ' + e.message }); 
+    }
 });
 
 // 2. Quản lý Đề Thi
