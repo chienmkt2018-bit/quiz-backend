@@ -182,21 +182,6 @@ app.delete('/api/exams/:code', async (req, res) => {
         res.json({ success: true });
     } catch (e) { res.json({ success: false, message: e.message }); }
 });
-// API: Xóa đề thi
-app.delete('/api/exams/:examCode', (req, res) => {
-    const examCode = req.params.examCode;
-    
-    // Tìm vị trí đề thi trong mảng dữ liệu (giả sử bạn đang lưu ở biến exams)
-    const examIndex = exams.findIndex(e => e.examCode === examCode);
-    
-    if (examIndex !== -1) {
-        exams.splice(examIndex, 1); // Xóa khỏi bộ nhớ
-        saveData(); // Gọi hàm lưu lại file JSON (tùy thuộc vào tên hàm lưu dữ liệu của bạn, có thể là saveDatabase() hoặc fs.writeFileSync...)
-        res.json({ success: true, message: `Đã xóa đề ${examCode} thành công!` });
-    } else {
-        res.status(404).json({ success: false, message: "Không tìm thấy đề thi này!" });
-    }
-});
 // 3. Lịch Sử & Mcion (Đã fix lỗi cấp Mcion)
 app.post('/api/submit', async (req, res) => {
     try {
