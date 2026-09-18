@@ -6,7 +6,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Kết nối Database. URI lấy từ biến môi trường của Render
+// Kết nối Database
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ Đã kết nối MongoDB!'))
   .catch(err => console.error('❌ Lỗi kết nối DB:', err));
@@ -18,13 +18,13 @@ const User = mongoose.model('User', new mongoose.Schema({
     fullname: String,
     role: { type: String, default: 'student' },
     mcion: { type: Number, default: 0 },
-    avatar: { type: String, default: "https://i.imgur.com/6VBx3io.png" },
+    avatar: { type: String, default: "https://api.dicebear.com/7.x/bottts/svg?seed=Default" },
     inventory: { type: [String], default: [] }
 }));
 
 const AdminAuth = mongoose.model('AdminAuth', new mongoose.Schema({
-    username: { type: String, default: 'admin' },
-    password: { type: String, default: '123' }
+    username: { type: String, default: 'hangmoon' },
+    password: { type: String, default: '041194' }
 }));
 
 const Exam = mongoose.model('Exam', new mongoose.Schema({
@@ -82,7 +82,6 @@ app.post('/api/login', async (req, res) => {
     } catch (e) {
         res.json({ success: false, message: 'Lỗi server: ' + e.message });
     }
-  
 });
 
 // API Đổi Mật Khẩu
@@ -118,14 +117,14 @@ app.post('/api/update-avatar', async (req, res) => {
         const user = await User.findOne({ username });
         if (!user) return res.json({ success: false, message: 'Không tìm thấy học viên!' });
 
-        if (avatarUrl === "default") {
-            user.avatar = "https://i.imgur.com/6VBx3io.png";
+        if (itemName === 'Mặc định' || avatarUrl.includes('seed=Default')) {
+            user.avatar = "https://api.dicebear.com/7.x/bottts/svg?seed=Default";
             await user.save();
             return res.json({ success: true, message: 'Đã chuyển về avatar mặc định!', user });
         }
 
         if (!user.inventory.includes(itemName)) {
-            return res.json({ success: false, message: 'Bạn chưa sở hữu vật phẩm này trong cửa hàng!' });
+            return res.json({ success: false, message: 'Bạn chưa sở hữu vật phẩm này!' });
         }
 
         user.avatar = avatarUrl;
@@ -136,7 +135,7 @@ app.post('/api/update-avatar', async (req, res) => {
     }
 });
 
-// 2. Quản lý Đề Thi (Đã fix lỗi tải bộ đề)
+// 2. Quản lý Đề Thi
 app.get('/api/exams', async (req, res) => {
     try {
         const exams = await Exam.find({}, 'examCode');
@@ -175,42 +174,42 @@ app.put('/api/exams/:code', async (req, res) => {
         res.json({ success: true });
     } catch (e) { res.json({ success: false, message: e.message }); }
 });
-// API: Xóa đề thi
-app.delete('/api/exams/:examCode', (req, res) => {
-    const examCode = req.params.examCode;
-    
-    // Tìm vị trí đề thi trong mảng dữ liệu (giả sử bạn đang lưu ở biến exams)
-    const examIndex = exams.findIndex(e => e.examCode === examCode);
-    
-    if (examIndex !== -1) {
-        exams.splice(examIndex, 1); // Xóa khỏi bộ nhớ
-        saveData(); // Gọi hàm lưu lại file JSON (tùy thuộc vào tên hàm lưu dữ liệu của bạn, có thể là saveDatabase() hoặc fs.writeFileSync...)
-        res.json({ success: true, message: `Đã xóa đề ${examCode} thành công!` });
-    } else {
-        res.status(404).json({ success: false, message: "Không tìm thấy đề thi này!" });
+
+// API Xóa đề thi (Đã khắc phục lỗi crash server)
+app.delete('/api/exams/:code', async (req, res) => {
+    try {
+        const result = await Exam.deleteOne({ examCode: req.params.code });
+        if (result.deletedCount > 0) {
+            res.json({ success: true, message: `Đã xóa đề ${req.params.code} thành công!` });
+        } else {
+            res.json({ success: false, message: 'Không tìm thấy đề thi cần xóa!' });
+        }
+    } catch (e) { 
+        res.json({ success: false, message: 'Lỗi server: ' + e.message }); 
     }
 });
 
-app.delete('/api/exams/:code', async (req, res) => {
-    try {
-        await Exam.deleteOne({ examCode: req.params.code });
-        res.json({ success: true });
-    } catch (e) { res.json({ success: false, message: e.message }); }
-});
-// 3. Lịch Sử & Mcion (Đã fix lỗi cấp Mcion)
-app.post('/api/submit', async (req, res) => {
-    try {
-        await History.create(req.body);
-        await User.findOneAndUpdate({ username: req.body.username }, { $inc: { mcion: req.body.earnedMcion } });
-        res.json({ success: true });
-    } catch (e) { res.json({ success: false }); }
-});
-
+// 3. Lịch sử & Mcion
 app.get('/api/history', async (req, res) => {
     try {
         const history = await History.find().sort({ _id: -1 });
         res.json(history);
     } catch (e) { res.json([]); }
+});
+
+// Bổ sung API nộp bài thi & lưu lịch sử làm bài
+app.post('/api/history', async (req, res) => {
+    try {
+        const { username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion } = req.body;
+        await History.create({ username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion });
+        
+        if (earnedMcion && earnedMcion > 0) {
+            await User.findOneAndUpdate({ username }, { $inc: { mcion: earnedMcion } });
+        }
+        res.json({ success: true, message: 'Đã lưu lịch sử làm bài!' });
+    } catch (e) {
+        res.json({ success: false, message: 'Lỗi lưu lịch sử: ' + e.message });
+    }
 });
 
 app.get('/api/mcion/:username', async (req, res) => {
@@ -220,7 +219,6 @@ app.get('/api/mcion/:username', async (req, res) => {
     } catch (e) { res.json({ balance: 0, inventory: [] }); }
 });
 
-// API Admin cấp / trừ Mcion cho học sinh
 app.post('/api/mcion/grant', async (req, res) => {
     try {
         const { username, amount } = req.body;
@@ -247,19 +245,22 @@ app.post('/api/mcion/buy', async (req, res) => {
     try {
         const { username, cost, itemName, avatarUrl } = req.body;
         const user = await User.findOne({ username });
-        if (user && user.mcion >= cost) {
-            user.mcion -= cost;
-            if (!user.inventory.includes(itemName)) {
-                user.inventory.push(itemName);
-            }
-            if (avatarUrl) {
-                user.avatar = avatarUrl;
-            }
-            await user.save();
-            res.json({ success: true, balance: user.mcion, user });
-        } else {
-            res.json({ success: false, message: 'Không đủ Mcion hoặc lỗi giao dịch!' });
+        if (!user) return res.json({ success: false, message: 'Người dùng không tồn tại!' });
+
+        if (user.inventory.includes(itemName)) {
+            return res.json({ success: false, message: 'Bạn đã sở hữu vật phẩm này rồi!' });
         }
+
+        if (user.mcion < cost) {
+            return res.json({ success: false, message: 'Không đủ Mcion để mua vật phẩm!' });
+        }
+
+        user.mcion -= cost;
+        user.inventory.push(itemName);
+        if (avatarUrl) user.avatar = avatarUrl;
+        
+        await user.save();
+        res.json({ success: true, balance: user.mcion, user });
     } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
