@@ -197,20 +197,27 @@ app.get('/api/history', async (req, res) => {
     } catch (e) { res.json([]); }
 });
 
-// Bổ sung API nộp bài thi & lưu lịch sử làm bài
-app.post('/api/history', async (req, res) => {
+// Hàm xử lý nộp bài và cộng Mcion
+const handleExamSubmit = async (req, res) => {
     try {
         const { username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion } = req.body;
         await History.create({ username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion });
         
         if (earnedMcion && earnedMcion > 0) {
-            await User.findOneAndUpdate({ username }, { $inc: { mcion: earnedMcion } });
+            await User.findOneAndUpdate(
+                { username }, 
+                { $inc: { mcion: Number(earnedMcion) } }
+            );
         }
-        res.json({ success: true, message: 'Đã lưu lịch sử làm bài!' });
+        res.json({ success: true, message: 'Đã lưu lịch sử làm bài và cộng Mcion thành công!' });
     } catch (e) {
-        res.json({ success: false, message: 'Lỗi lưu lịch sử: ' + e.message });
+        res.json({ success: false, message: 'Lỗi nộp bài: ' + e.message });
     }
-});
+};
+
+// Đăng ký cả 2 API endpoint để phục vụ cho cả /api/submit (giao diện index_3.html) và /api/history
+app.post('/api/submit', handleExamSubmit);
+app.post('/api/history', handleExamSubmit);
 
 app.get('/api/mcion/:username', async (req, res) => {
     try {
@@ -261,6 +268,29 @@ app.post('/api/mcion/buy', async (req, res) => {
         
         await user.save();
         res.json({ success: true, balance: user.mcion, user });
+    } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+// 4. UI & Admin Settings
+app.get('/api/ui', async (req, res) => {
+    try {
+        let ui = await UI.findOne();
+        if (!ui) ui = await UI.create({ title: "Hệ Thống Trắc Nghiệm Online", banner: "", primaryColor: "#3498db", bgColor: "#f4f7f6" });
+        res.json(ui);
+    } catch (e) { res.json({}); }
+});
+
+app.post('/api/ui', async (req, res) => {
+    try {
+        let ui = await UI.findOne();
+        if (ui) await UI.updateOne({}, req.body);
+        else await UI.create(req.body);
+        res.json({ success: true });
+    } catch (e) { res.json({ success: false }); }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server đang chạy tại PORT ${PORT}`));   res.json({ success: true, balance: user.mcion, user });
     } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
