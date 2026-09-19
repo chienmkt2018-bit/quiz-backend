@@ -1,7 +1,24 @@
-// server.js (sửa: dùng bcryptjs)
+// server.js
+// Express server compatible with the provided client.
+// Uses bcryptjs if available, falls back to bcrypt if present.
+// Persist data to db.json using fs-extra.
+// Run: node server.js
+
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcryptjs'); // <-- bcryptjs thay cho bcrypt
+let bcrypt;
+try {
+  // Prefer bcryptjs (pure JS, no native build)
+  bcrypt = require('bcryptjs');
+} catch (e) {
+  try {
+    // Fallback to native bcrypt if bcryptjs not installed
+    bcrypt = require('bcrypt');
+  } catch (err) {
+    console.error('Missing bcryptjs or bcrypt. Please install one of them.');
+    process.exit(1);
+  }
+}
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs-extra');
@@ -21,9 +38,9 @@ async function loadDB() {
     const exists = await fs.pathExists(DATA_FILE);
     if (!exists) {
       const init = {
-        users: [],
-        exams: {},
-        history: [],
+        users: [],        // { username, fullname, passwordHash, role, avatar, mcion, inventory: [] }
+        exams: {},        // examCode -> { examCode, timeLimit, questions: [{ id, question, options, correct }] }
+        history: [],      // { id, username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion }
         ui: { title: 'Trang Web Học Tập Của MR Minh', primaryColor: '#3498db', bgColor: '#f4f7f6', banner: '' }
       };
       await fs.writeJson(DATA_FILE, init, { spaces: 2 });
@@ -122,6 +139,7 @@ app.post('/api/login', async (req, res) => {
 
   const token = signToken({ username: user.username, role: user.role });
   const clientUser = sanitizeUserForClient(user);
+  // Return both token and user object for backward compatibility with client
   res.json({ success: true, token, user: clientUser, username: user.username, fullname: user.fullname, role: user.role, avatar: user.avatar, mcion: user.mcion });
 });
 
@@ -193,6 +211,7 @@ app.delete('/api/exams/:code', authMiddleware, requireAdmin, async (req, res) =>
 });
 
 // Submit exam (student) - server recomputes score
+// Expected body: { username, answers: [{ qIndex, choice }], examCode }
 app.post('/api/submit', authMiddleware, async (req, res) => {
   const { username, examCode, answers } = req.body;
   if (!username || !examCode) return res.status(400).json({ success: false, message: 'Missing fields' });
