@@ -382,7 +382,20 @@ app.post('/api/update-avatar', async (req, res) => {
 
 // Fallback Route
 app.use((req, res) => res.status(404).json({ success: false, message: 'API Route không tồn tại' }));
-
+// Route Reset Mật khẩu Admin khẩn cấp
+app.get('/reset-admin-password', async (req, res) => {
+  try {
+    const hash = await bcrypt.hash('admin123', 10);
+    const user = await User.findOneAndUpdate(
+      { username: 'admin' },
+      { passwordHash: hash, role: 'admin' },
+      { new: true, upsert: true }
+    );
+    res.send('✅ Đã reset mật khẩu Admin về: admin123 thành công!');
+  } catch (e) {
+    res.send('❌ Lỗi: ' + e.message);
+  }
+});
 app.listen(PORT, () => {
   console.log(`🚀 Server đang chạy trên cổng ${PORT}`);
 });
