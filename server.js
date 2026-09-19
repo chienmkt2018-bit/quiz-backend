@@ -1,316 +1,344 @@
+// server.js
+// Run: npm init -y
+// npm i express cors bcrypt jsonwebtoken uuid fs-extra
 const express = require('express');
 const cors = require('cors');
-const mongoose = require('mongoose');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+const fs = require('fs-extra');
+const path = require('path');
+
+const DATA_FILE = path.join(__dirname, 'db.json');
+const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret_in_prod';
+const PORT = process.env.PORT || 3000;
 
 const app = express();
-app.use(cors());
 app.use(express.json());
+app.use(cors()); // adjust origin in production
 
-// Kết nối Database
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ Đã kết nối MongoDB!'))
-  .catch(err => console.error('❌ Lỗi kết nối DB:', err));
+// --- Simple file-backed DB helpers ---
+async function loadDB() {
+  try {
+    const exists = await fs.pathExists(DATA_FILE);
+    if (!exists) {
+      const init = {
+        users: [],        // { username, fullname, passwordHash, role, avatar, mcion, inventory: [] }
+        exams: {},        // examCode -> { examCode, timeLimit, questions: [{ id, question, options, correct }] }
+        history: [],      // { id, username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion }
+        ui: { title: 'Trang Web Học Tập Của MR Minh', primaryColor: '#3498db', bgColor: '#f4f7f6', banner: '' }
+      };
+      await fs.writeJson(DATA_FILE, init, { spaces: 2 });
+      return init;
+    }
+    return await fs.readJson(DATA_FILE);
+  } catch (e) {
+    console.error('DB load error', e);
+    return null;
+  }
+}
+async function saveDB(db) {
+  await fs.writeJson(DATA_FILE, db, { spaces: 2 });
+}
 
-// ================= CẤU TRÚC DATABASE ================= //
-const User = mongoose.model('User', new mongoose.Schema({
-    username: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
-    fullname: String,
-    role: { type: String, default: 'student' },
-    mcion: { type: Number, default: 0 },
-    avatar: { type: String, default: "https://api.dicebear.com/7.x/bottts/svg?seed=Default" },
-    inventory: { type: [String], default: [] }
-}));
+// --- Auth helpers ---
+function signToken(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+}
+function verifyToken(token) {
+  try {
+    return jwt.verify(token, JWT_SECRET);
+  } catch (e) {
+    return null;
+  }
+}
+function authMiddleware(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  const token = auth.slice(7);
+  const payload = verifyToken(token);
+  if (!payload) return res.status(401).json({ success: false, message: 'Invalid token' });
+  req.user = payload;
+  next();
+}
+function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden: admin only' });
+  next();
+}
 
-const AdminAuth = mongoose.model('AdminAuth', new mongoose.Schema({
-    username: { type: String, default: 'hangmoon' },
-    password: { type: String, default: '041194' }
-}));
+// --- Utility ---
+function sanitizeUserForClient(user) {
+  return {
+    username: user.username,
+    fullname: user.fullname,
+    role: user.role,
+    avatar: user.avatar || '',
+    mcion: user.mcion || 0,
+    inventory: user.inventory || []
+  };
+}
+function validateQuestion(q) {
+  if (!q || typeof q.question !== 'string') return false;
+  if (!Array.isArray(q.options) || q.options.length < 2) return false;
+  if (!q.correct) return false;
+  const c = String(q.correct).toUpperCase();
+  return ['A','B','C','D','0','1','2','3'].includes(c);
+}
 
-const Exam = mongoose.model('Exam', new mongoose.Schema({
-    examCode: { type: String, required: true, unique: true },
-    timeLimit: { type: Number, default: 0 },
-    questions: Array
-}));
+// --- Routes ---
 
-const History = mongoose.model('History', new mongoose.Schema({
-    username: String, fullname: String, examCode: String,
-    correctCount: Number, totalQuestions: Number, score: String,
-    time: String, earnedMcion: Number
-}));
+// Health
+app.get('/api/health', (req, res) => res.json({ success: true }));
 
-const UI = mongoose.model('UI', new mongoose.Schema({
-    title: String, banner: String, primaryColor: String, bgColor: String
-}));
+// UI settings
+app.get('/api/ui', async (req, res) => {
+  const db = await loadDB();
+  res.json(db.ui || {});
+});
 
-// ================= API ENDPOINTS ================= //
-
-// 1. Quản lý Tài khoản & Đăng nhập
+// Register
 app.post('/api/register', async (req, res) => {
-    try {
-        const { fullname, username, password } = req.body;
-        const exists = await User.findOne({ username });
-        if (exists) return res.json({ success: false, message: 'Tên đăng nhập đã tồn tại!' });
-        await User.create({ fullname, username, password });
-        res.json({ success: true });
-    } catch (e) { res.json({ success: false, message: e.message }); }
+  const { fullname, username, password } = req.body;
+  if (!fullname || !username || !password) return res.status(400).json({ success: false, message: 'Missing fields' });
+
+  const db = await loadDB();
+  if (db.users.find(u => u.username === username)) return res.status(409).json({ success: false, message: 'Username exists' });
+
+  const hash = await bcrypt.hash(password, 10);
+  const user = { username, fullname, passwordHash: hash, role: 'student', avatar: '', mcion: 0, inventory: [] };
+  db.users.push(user);
+  await saveDB(db);
+  res.json({ success: true, message: 'Registered' });
 });
 
+// Login (returns user object + token)
 app.post('/api/login', async (req, res) => {
-    try {
-        const { username, password, role } = req.body;
-        if (role === 'admin') {
-            let admin = await AdminAuth.findOne();
-            if (!admin) admin = await AdminAuth.create({ username: 'hangmoon', password: '041194' });
-            if (username === admin.username && password === admin.password) {
-                return res.json({ success: true, username, role: 'admin' });
-            }
-            return res.json({ success: false, message: 'Sai tài khoản hoặc mật khẩu Admin!' });
-        }
-        const user = await User.findOne({ username, password });
-        if (user) {
-            return res.json({ 
-                success: true, 
-                username: user.username, 
-                fullname: user.fullname, 
-                role: 'student',
-                avatar: user.avatar,
-                mcion: user.mcion
-            });
-        }
-        res.json({ success: false, message: 'Sai thông tin học sinh!' });
-    } catch (e) {
-        res.json({ success: false, message: 'Lỗi server: ' + e.message });
-    }
+  const { username, password, role } = req.body;
+  if (!username || !password) return res.status(400).json({ success: false, message: 'Missing credentials' });
+
+  const db = await loadDB();
+  const user = db.users.find(u => u.username === username && (role ? u.role === role : true));
+  if (!user) return res.status(401).json({ success: false, message: 'Invalid username or role' });
+
+  const ok = await bcrypt.compare(password, user.passwordHash);
+  if (!ok) return res.status(401).json({ success: false, message: 'Invalid password' });
+
+  const token = signToken({ username: user.username, role: user.role });
+  const clientUser = sanitizeUserForClient(user);
+  // Return both token and user object for backward compatibility with client
+  res.json({ success: true, token, user: clientUser, username: user.username, fullname: user.fullname, role: user.role, avatar: user.avatar, mcion: user.mcion });
 });
 
-// API Đổi Mật Khẩu
-app.post('/api/change-password', async (req, res) => {
-    try {
-        const { username, role, oldPassword, newPassword } = req.body;
-        if (role === 'admin') {
-            const admin = await AdminAuth.findOne();
-            if (admin && admin.username === username && admin.password === oldPassword) {
-                admin.password = newPassword;
-                await admin.save();
-                return res.json({ success: true, message: 'Đổi mật khẩu Admin thành công!' });
-            }
-            return res.json({ success: false, message: 'Mật khẩu cũ không chính xác!' });
-        } else {
-            const user = await User.findOne({ username, password: oldPassword });
-            if (user) {
-                user.password = newPassword;
-                await user.save();
-                return res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
-            }
-            return res.json({ success: false, message: 'Mật khẩu cũ không chính xác!' });
-        }
-    } catch (e) { 
-        res.json({ success: false, message: 'Lỗi hệ thống: ' + e.message }); 
-    }
+// Change password (authenticated)
+app.post('/api/change-password', authMiddleware, async (req, res) => {
+  const { username, role, oldPassword, newPassword } = req.body;
+  if (!username || !oldPassword || !newPassword) return res.status(400).json({ success: false, message: 'Missing fields' });
+
+  const db = await loadDB();
+  const user = db.users.find(u => u.username === username);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+  if (req.user.username !== username && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
+
+  const ok = await bcrypt.compare(oldPassword, user.passwordHash);
+  if (!ok) return res.status(401).json({ success: false, message: 'Old password incorrect' });
+
+  user.passwordHash = await bcrypt.hash(newPassword, 10);
+  await saveDB(db);
+  res.json({ success: true, message: 'Password changed' });
 });
 
-// API Cập nhật Avatar
-app.post('/api/update-avatar', async (req, res) => {
-    try {
-        const { username, avatarUrl, itemName } = req.body;
-        const user = await User.findOne({ username });
-        if (!user) return res.json({ success: false, message: 'Không tìm thấy học viên!' });
-
-        if (itemName === 'Mặc định' || avatarUrl.includes('seed=Default')) {
-            user.avatar = "https://api.dicebear.com/7.x/bottts/svg?seed=Default";
-            await user.save();
-            return res.json({ success: true, message: 'Đã chuyển về avatar mặc định!', user });
-        }
-
-        if (!user.inventory.includes(itemName)) {
-            return res.json({ success: false, message: 'Bạn chưa sở hữu vật phẩm này!' });
-        }
-
-        user.avatar = avatarUrl;
-        await user.save();
-        res.json({ success: true, message: 'Đổi avatar thành công!', user });
-    } catch (e) {
-        res.json({ success: false, message: 'Lỗi: ' + e.message });
-    }
-});
-
-// 2. Quản lý Đề Thi
+// Exams: list codes
 app.get('/api/exams', async (req, res) => {
-    try {
-        const exams = await Exam.find({}, 'examCode');
-        res.json(exams.map(e => e.examCode));
-    } catch (e) { res.json([]); }
+  const db = await loadDB();
+  const codes = Object.keys(db.exams || {});
+  res.json(codes);
 });
 
+// Get exam by code
 app.get('/api/exams/:code', async (req, res) => {
-    try {
-        const exam = await Exam.findOne({ examCode: req.params.code });
-        res.json(exam || { timeLimit: 0, questions: [] });
-    } catch (e) { res.json({ timeLimit: 0, questions: [] }); }
+  const code = req.params.code;
+  const db = await loadDB();
+  const exam = db.exams[code];
+  if (!exam) return res.status(404).json({ success: false, message: 'Exam not found' });
+  res.json(exam);
 });
 
-app.post('/api/exams', async (req, res) => {
-    try {
-        const { examCode, timeLimit, questions } = req.body;
-        if (!examCode || !questions) {
-            return res.json({ success: false, message: 'Thiếu mã đề hoặc câu hỏi!' });
-        }
-        await Exam.findOneAndUpdate(
-            { examCode }, 
-            { timeLimit: timeLimit || 0, questions }, 
-            { upsert: true, new: true }
-        );
-        res.json({ success: true, message: 'Lưu bộ đề thành công!' });
-    } catch (e) {
-        res.json({ success: false, message: 'Lỗi lưu đề: ' + e.message });
-    }
+// Create exam (admin)
+app.post('/api/exams', authMiddleware, requireAdmin, async (req, res) => {
+  const { examCode, timeLimit, questions } = req.body;
+  if (!examCode || !Array.isArray(questions)) return res.status(400).json({ success: false, message: 'Invalid payload' });
+
+  // validate questions
+  for (const q of questions) {
+    if (!validateQuestion(q)) return res.status(400).json({ success: false, message: 'Invalid question format' });
+  }
+
+  const db = await loadDB();
+  if (db.exams[examCode]) return res.status(409).json({ success: false, message: 'Exam code exists' });
+
+  // Normalize correct to letter A/B/C/D
+  const normalized = questions.map((q, idx) => {
+    let correct = String(q.correct).toUpperCase();
+    if (['0','1','2','3'].includes(correct)) correct = ['A','B','C','D'][Number(correct)];
+    return { id: q.id || idx+1, question: q.question, options: q.options, correct };
+  });
+
+  db.exams[examCode] = { examCode, timeLimit: Number(timeLimit) || 0, questions: normalized };
+  await saveDB(db);
+  res.status(201).json({ success: true, message: 'Exam saved' });
 });
 
-app.put('/api/exams/:code', async (req, res) => {
-    try {
-        const { timeLimit, questions } = req.body;
-        await Exam.findOneAndUpdate({ examCode: req.params.code }, { timeLimit, questions });
-        res.json({ success: true });
-    } catch (e) { res.json({ success: false, message: e.message }); }
+// Delete exam (admin)
+app.delete('/api/exams/:code', authMiddleware, requireAdmin, async (req, res) => {
+  const code = req.params.code;
+  const db = await loadDB();
+  if (!db.exams[code]) return res.status(404).json({ success: false, message: 'Not found' });
+  delete db.exams[code];
+  await saveDB(db);
+  res.json({ success: true, message: 'Deleted' });
 });
 
-// API Xóa đề thi (Đã khắc phục lỗi crash server)
-app.delete('/api/exams/:code', async (req, res) => {
-    try {
-        const result = await Exam.deleteOne({ examCode: req.params.code });
-        if (result.deletedCount > 0) {
-            res.json({ success: true, message: `Đã xóa đề ${req.params.code} thành công!` });
-        } else {
-            res.json({ success: false, message: 'Không tìm thấy đề thi cần xóa!' });
-        }
-    } catch (e) { 
-        res.json({ success: false, message: 'Lỗi server: ' + e.message }); 
-    }
+// Submit exam (student) - server recomputes score
+// Expected body: { username, answers: [{ qIndex, choice }], examCode }
+// For backward compatibility, if client sends correctCount/score, server will ignore and recompute.
+app.post('/api/submit', authMiddleware, async (req, res) => {
+  const { username, examCode, answers } = req.body;
+  if (!username || !examCode) return res.status(400).json({ success: false, message: 'Missing fields' });
+
+  // Only the user themselves or admin can submit on behalf
+  if (req.user.username !== username && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
+
+  const db = await loadDB();
+  const exam = db.exams[examCode];
+  if (!exam) return res.status(404).json({ success: false, message: 'Exam not found' });
+
+  // Build answers map
+  const ansMap = new Map();
+  if (Array.isArray(answers)) {
+    answers.forEach(a => {
+      if (typeof a.qIndex !== 'undefined' && a.choice) ansMap.set(Number(a.qIndex), String(a.choice).toUpperCase());
+    });
+  } else {
+    // fallback: try to accept client-sent correctCount (not recommended)
+  }
+
+  let correctCount = 0;
+  exam.questions.forEach((q, idx) => {
+    const expected = String(q.correct).toUpperCase();
+    const given = ansMap.has(idx) ? ansMap.get(idx) : null;
+    if (given && given === expected) correctCount++;
+  });
+
+  const total = exam.questions.length;
+  const score = Number(((correctCount / total) * 10).toFixed(1));
+  const earnedMcion = correctCount * 10;
+
+  // Save history and update mcion atomically (simple approach)
+  const hist = {
+    id: uuidv4(),
+    username,
+    fullname: (db.users.find(u => u.username === username) || {}).fullname || username,
+    examCode,
+    correctCount,
+    totalQuestions: total,
+    score,
+    time: new Date().toLocaleString('vi-VN'),
+    earnedMcion
+  };
+  db.history.push(hist);
+
+  // Update user mcion
+  const user = db.users.find(u => u.username === username);
+  if (user) {
+    user.mcion = (user.mcion || 0) + earnedMcion;
+  }
+  await saveDB(db);
+
+  res.json({ success: true, correctCount, total, score, earnedMcion });
 });
 
-// 3. Lịch sử & Mcion
-app.get('/api/history', async (req, res) => {
-    try {
-        const history = await History.find().sort({ _id: -1 });
-        res.json(history);
-    } catch (e) { res.json([]); }
+// History (all)
+app.get('/api/history', authMiddleware, async (req, res) => {
+  const db = await loadDB();
+  // students can see all but client filters by username; admin sees all
+  res.json(db.history || []);
 });
 
-// Hàm xử lý nộp bài và cộng Mcion
-const handleExamSubmit = async (req, res) => {
-    try {
-        const { username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion } = req.body;
-        await History.create({ username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion });
-        
-        if (earnedMcion && earnedMcion > 0) {
-            await User.findOneAndUpdate(
-                { username }, 
-                { $inc: { mcion: Number(earnedMcion) } }
-            );
-        }
-        res.json({ success: true, message: 'Đã lưu lịch sử làm bài và cộng Mcion thành công!' });
-    } catch (e) {
-        res.json({ success: false, message: 'Lỗi nộp bài: ' + e.message });
-    }
-};
+// Mcion balance & inventory
+app.get('/api/mcion/:username', authMiddleware, async (req, res) => {
+  const username = req.params.username;
+  // allow user or admin
+  if (req.user.username !== username && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
 
-// Đăng ký cả 2 API endpoint để phục vụ cho cả /api/submit (giao diện index_3.html) và /api/history
-app.post('/api/submit', handleExamSubmit);
-app.post('/api/history', handleExamSubmit);
-
-app.get('/api/mcion/:username', async (req, res) => {
-    try {
-        const user = await User.findOne({ username: req.params.username });
-        res.json({ balance: user ? user.mcion : 0, inventory: user ? user.inventory : [] });
-    } catch (e) { res.json({ balance: 0, inventory: [] }); }
+  const db = await loadDB();
+  const user = db.users.find(u => u.username === username);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+  res.json({ balance: user.mcion || 0, inventory: user.inventory || [] });
 });
 
-app.post('/api/mcion/grant', async (req, res) => {
-    try {
-        const { username, amount } = req.body;
-        const numAmount = parseInt(amount, 10);
-        if (!username || isNaN(numAmount)) {
-            return res.json({ success: false, message: 'Vui lòng nhập đúng username và số lượng Mcion!' });
-        }
-        const user = await User.findOneAndUpdate(
-            { username }, 
-            { $inc: { mcion: numAmount } }, 
-            { new: true }
-        );
-        if (user) {
-            res.json({ success: true, message: `Đã cập nhật ${numAmount} Mcion cho học sinh ${username}!`, balance: user.mcion });
-        } else {
-            res.json({ success: false, message: 'Không tìm thấy tài khoản học sinh này!' });
-        }
-    } catch (e) {
-        res.json({ success: false, message: 'Lỗi server: ' + e.message });
-    }
+// Grant Mcion (admin)
+app.post('/api/mcion/grant', authMiddleware, requireAdmin, async (req, res) => {
+  const { username, amount } = req.body;
+  if (!username || typeof amount === 'undefined') return res.status(400).json({ success: false, message: 'Missing fields' });
+
+  const db = await loadDB();
+  const user = db.users.find(u => u.username === username);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+  user.mcion = (user.mcion || 0) + Number(amount);
+  await saveDB(db);
+  res.json({ success: true, message: `Granted ${amount} Mcion to ${username}` });
 });
 
-app.post('/api/mcion/buy', async (req, res) => {
-    try {
-        const { username, cost, itemName, avatarUrl } = req.body;
-        const user = await User.findOne({ username });
-        if (!user) return res.json({ success: false, message: 'Người dùng không tồn tại!' });
+// Buy item (student)
+app.post('/api/mcion/buy', authMiddleware, async (req, res) => {
+  const { username, itemName, cost, avatarUrl } = req.body;
+  if (!username || !itemName || typeof cost === 'undefined') return res.status(400).json({ success: false, message: 'Missing fields' });
 
-        if (user.inventory.includes(itemName)) {
-            return res.json({ success: false, message: 'Bạn đã sở hữu vật phẩm này rồi!' });
-        }
+  // only user or admin can perform
+  if (req.user.username !== username && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
 
-        if (user.mcion < cost) {
-            return res.json({ success: false, message: 'Không đủ Mcion để mua vật phẩm!' });
-        }
+  const db = await loadDB();
+  const user = db.users.find(u => u.username === username);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-        user.mcion -= cost;
-        user.inventory.push(itemName);
-        if (avatarUrl) user.avatar = avatarUrl;
-        
-        await user.save();
-        res.json({ success: true, balance: user.mcion, user });
-    } catch (e) { res.json({ success: false, message: e.message }); }
+  const price = Number(cost);
+  if ((user.mcion || 0) < price) return res.status(400).json({ success: false, message: 'Insufficient Mcion' });
+
+  // atomic-ish update
+  user.mcion = (user.mcion || 0) - price;
+  user.inventory = user.inventory || [];
+  if (!user.inventory.includes(itemName)) user.inventory.push(itemName);
+  if (avatarUrl) user.avatar = avatarUrl;
+
+  await saveDB(db);
+  res.json({ success: true, balance: user.mcion, user: sanitizeUserForClient(user) });
 });
 
-// 4. UI & Admin Settings
-app.get('/api/ui', async (req, res) => {
-    try {
-        let ui = await UI.findOne();
-        if (!ui) ui = await UI.create({ title: "Hệ Thống Trắc Nghiệm Online", banner: "", primaryColor: "#3498db", bgColor: "#f4f7f6" });
-        res.json(ui);
-    } catch (e) { res.json({}); }
+// Update avatar (student)
+app.post('/api/update-avatar', authMiddleware, async (req, res) => {
+  const { username, avatar, avatarUrl, itemName } = req.body;
+  if (!username || !(avatar || avatarUrl)) return res.status(400).json({ success: false, message: 'Missing fields' });
+
+  if (req.user.username !== username && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
+
+  const db = await loadDB();
+  const user = db.users.find(u => u.username === username);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+  // ensure user owns the item (if itemName provided)
+  if (itemName && (!user.inventory || !user.inventory.includes(itemName))) {
+    return res.status(400).json({ success: false, message: 'You do not own this avatar' });
+  }
+
+  user.avatar = avatar || avatarUrl;
+  await saveDB(db);
+  res.json({ success: true, user: sanitizeUserForClient(user) });
 });
 
-app.post('/api/ui', async (req, res) => {
-    try {
-        let ui = await UI.findOne();
-        if (ui) await UI.updateOne({}, req.body);
-        else await UI.create(req.body);
-        res.json({ success: true });
-    } catch (e) { res.json({ success: false }); }
-});
+// Fallback
+app.use((req, res) => res.status(404).json({ success: false, message: 'Not found' }));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server đang chạy tại PORT ${PORT}`));   res.json({ success: true, balance: user.mcion, user });
-    } catch (e) { res.json({ success: false, message: e.message }); }
+// Start
+app.listen(PORT, () => {
+  console.log(`API server running on http://localhost:${PORT}`);
 });
-
-// 4. UI & Admin Settings
-app.get('/api/ui', async (req, res) => {
-    try {
-        let ui = await UI.findOne();
-        if (!ui) ui = await UI.create({ title: "Hệ Thống Trắc Nghiệm Online", banner: "", primaryColor: "#3498db", bgColor: "#f4f7f6" });
-        res.json(ui);
-    } catch (e) { res.json({}); }
-});
-
-app.post('/api/ui', async (req, res) => {
-    try {
-        let ui = await UI.findOne();
-        if (ui) await UI.updateOne({}, req.body);
-        else await UI.create(req.body);
-        res.json({ success: true });
-    } catch (e) { res.json({ success: false }); }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server đang chạy tại PORT ${PORT}`));
