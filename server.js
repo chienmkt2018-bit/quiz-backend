@@ -1,9 +1,7 @@
-// server.js
-// Run: npm init -y
-// npm i express cors bcrypt jsonwebtoken uuid fs-extra
+// server.js (sửa: dùng bcryptjs)
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs'); // <-- bcryptjs thay cho bcrypt
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs-extra');
@@ -15,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // adjust origin in production
+app.use(cors());
 
 // --- Simple file-backed DB helpers ---
 async function loadDB() {
@@ -23,9 +21,9 @@ async function loadDB() {
     const exists = await fs.pathExists(DATA_FILE);
     if (!exists) {
       const init = {
-        users: [],        // { username, fullname, passwordHash, role, avatar, mcion, inventory: [] }
-        exams: {},        // examCode -> { examCode, timeLimit, questions: [{ id, question, options, correct }] }
-        history: [],      // { id, username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion }
+        users: [],
+        exams: {},
+        history: [],
         ui: { title: 'Trang Web Học Tập Của MR Minh', primaryColor: '#3498db', bgColor: '#f4f7f6', banner: '' }
       };
       await fs.writeJson(DATA_FILE, init, { spaces: 2 });
@@ -86,7 +84,6 @@ function validateQuestion(q) {
 }
 
 // --- Routes ---
-
 // Health
 app.get('/api/health', (req, res) => res.json({ success: true }));
 
@@ -125,13 +122,12 @@ app.post('/api/login', async (req, res) => {
 
   const token = signToken({ username: user.username, role: user.role });
   const clientUser = sanitizeUserForClient(user);
-  // Return both token and user object for backward compatibility with client
   res.json({ success: true, token, user: clientUser, username: user.username, fullname: user.fullname, role: user.role, avatar: user.avatar, mcion: user.mcion });
 });
 
 // Change password (authenticated)
 app.post('/api/change-password', authMiddleware, async (req, res) => {
-  const { username, role, oldPassword, newPassword } = req.body;
+  const { username, oldPassword, newPassword } = req.body;
   if (!username || !oldPassword || !newPassword) return res.status(400).json({ success: false, message: 'Missing fields' });
 
   const db = await loadDB();
@@ -168,7 +164,6 @@ app.post('/api/exams', authMiddleware, requireAdmin, async (req, res) => {
   const { examCode, timeLimit, questions } = req.body;
   if (!examCode || !Array.isArray(questions)) return res.status(400).json({ success: false, message: 'Invalid payload' });
 
-  // validate questions
   for (const q of questions) {
     if (!validateQuestion(q)) return res.status(400).json({ success: false, message: 'Invalid question format' });
   }
@@ -176,7 +171,6 @@ app.post('/api/exams', authMiddleware, requireAdmin, async (req, res) => {
   const db = await loadDB();
   if (db.exams[examCode]) return res.status(409).json({ success: false, message: 'Exam code exists' });
 
-  // Normalize correct to letter A/B/C/D
   const normalized = questions.map((q, idx) => {
     let correct = String(q.correct).toUpperCase();
     if (['0','1','2','3'].includes(correct)) correct = ['A','B','C','D'][Number(correct)];
@@ -199,27 +193,21 @@ app.delete('/api/exams/:code', authMiddleware, requireAdmin, async (req, res) =>
 });
 
 // Submit exam (student) - server recomputes score
-// Expected body: { username, answers: [{ qIndex, choice }], examCode }
-// For backward compatibility, if client sends correctCount/score, server will ignore and recompute.
 app.post('/api/submit', authMiddleware, async (req, res) => {
   const { username, examCode, answers } = req.body;
   if (!username || !examCode) return res.status(400).json({ success: false, message: 'Missing fields' });
 
-  // Only the user themselves or admin can submit on behalf
   if (req.user.username !== username && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
 
   const db = await loadDB();
   const exam = db.exams[examCode];
   if (!exam) return res.status(404).json({ success: false, message: 'Exam not found' });
 
-  // Build answers map
   const ansMap = new Map();
   if (Array.isArray(answers)) {
     answers.forEach(a => {
       if (typeof a.qIndex !== 'undefined' && a.choice) ansMap.set(Number(a.qIndex), String(a.choice).toUpperCase());
     });
-  } else {
-    // fallback: try to accept client-sent correctCount (not recommended)
   }
 
   let correctCount = 0;
@@ -233,7 +221,6 @@ app.post('/api/submit', authMiddleware, async (req, res) => {
   const score = Number(((correctCount / total) * 10).toFixed(1));
   const earnedMcion = correctCount * 10;
 
-  // Save history and update mcion atomically (simple approach)
   const hist = {
     id: uuidv4(),
     username,
@@ -247,11 +234,8 @@ app.post('/api/submit', authMiddleware, async (req, res) => {
   };
   db.history.push(hist);
 
-  // Update user mcion
   const user = db.users.find(u => u.username === username);
-  if (user) {
-    user.mcion = (user.mcion || 0) + earnedMcion;
-  }
+  if (user) user.mcion = (user.mcion || 0) + earnedMcion;
   await saveDB(db);
 
   res.json({ success: true, correctCount, total, score, earnedMcion });
@@ -260,14 +244,12 @@ app.post('/api/submit', authMiddleware, async (req, res) => {
 // History (all)
 app.get('/api/history', authMiddleware, async (req, res) => {
   const db = await loadDB();
-  // students can see all but client filters by username; admin sees all
   res.json(db.history || []);
 });
 
 // Mcion balance & inventory
 app.get('/api/mcion/:username', authMiddleware, async (req, res) => {
   const username = req.params.username;
-  // allow user or admin
   if (req.user.username !== username && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
 
   const db = await loadDB();
@@ -294,7 +276,6 @@ app.post('/api/mcion/buy', authMiddleware, async (req, res) => {
   const { username, itemName, cost, avatarUrl } = req.body;
   if (!username || !itemName || typeof cost === 'undefined') return res.status(400).json({ success: false, message: 'Missing fields' });
 
-  // only user or admin can perform
   if (req.user.username !== username && req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
 
   const db = await loadDB();
@@ -304,7 +285,6 @@ app.post('/api/mcion/buy', authMiddleware, async (req, res) => {
   const price = Number(cost);
   if ((user.mcion || 0) < price) return res.status(400).json({ success: false, message: 'Insufficient Mcion' });
 
-  // atomic-ish update
   user.mcion = (user.mcion || 0) - price;
   user.inventory = user.inventory || [];
   if (!user.inventory.includes(itemName)) user.inventory.push(itemName);
@@ -325,7 +305,6 @@ app.post('/api/update-avatar', authMiddleware, async (req, res) => {
   const user = db.users.find(u => u.username === username);
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-  // ensure user owns the item (if itemName provided)
   if (itemName && (!user.inventory || !user.inventory.includes(itemName))) {
     return res.status(400).json({ success: false, message: 'You do not own this avatar' });
   }
@@ -338,7 +317,6 @@ app.post('/api/update-avatar', authMiddleware, async (req, res) => {
 // Fallback
 app.use((req, res) => res.status(404).json({ success: false, message: 'Not found' }));
 
-// Start
 app.listen(PORT, () => {
   console.log(`API server running on http://localhost:${PORT}`);
 });
