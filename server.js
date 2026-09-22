@@ -80,36 +80,27 @@ const History = mongoose.model('History', HistorySchema);
 const UI = mongoose.model('UI', UISchema);
 
 
-// --- 3. KHỞI TẠO TÀI KHOẢN ADMIN MẶC ĐỊNH ---
 // --- 3. KHỞI TẠO VÀ ĐỒNG BỘ TÀI KHOẢN ADMIN MẶC ĐỊNH ---
 async function initDefaultAdmin() {
   try {
-    const hash = await bcrypt.hash('admin123', 10);
-    await User.findOneAndUpdate(
-      { username: 'admin' },
-      { 
+    const existingAdmin = await User.findOne({ username: 'admin' });
+    
+    // Chỉ tạo mới nếu tài khoản admin CHƯA TỒN TẠI
+    if (!existingAdmin) {
+      const hash = await bcrypt.hash('admin123', 10);
+      await User.create({
         username: 'admin',
         fullname: 'Administrator',
         passwordHash: hash,
         role: 'admin'
-      },
-      { upsert: true, new: true }
-    );
-    console.log('👑 Đã đồng bộ thành công tài khoản Admin (user: admin / pass: admin123)');
+      });
+      console.log('👑 Đã tạo mới tài khoản Admin mặc định (user: admin / pass: admin123)');
+    } else {
+      console.log('👑 Tài khoản Admin đã tồn tại, giữ nguyên mật khẩu hiện tại.');
+    }
   } catch (e) {
     console.error('Lỗi khi khởi tạo Admin mặc định:', e);
   }
-}
-
-function sanitizeUserForClient(user) {
-  return {
-    username: user.username,
-    fullname: user.fullname,
-    role: user.role,
-    avatar: user.avatar || '',
-    mcion: user.mcion || 0,
-    inventory: user.inventory || []
-  };
 }
 
 
