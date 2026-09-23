@@ -1,4 +1,4 @@
-// server v2.js - Đã nâng cấp JWT Middleware Bảo mật
+// server v2.js - Đã nâng cấp JWT Middleware Bảo mật & API Lịch sử theo Tab/Bộ lọc
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -321,9 +321,30 @@ app.post('/api/submit', verifyToken, async (req, res) => {
   }
 });
 
+// --- CẬP NHẬT: LẤY LỊCH SỬ CÓ HỖ TRỢ ĐẾM GIỚI HẠN VÀ LỌC THEO TÊN HỌC SINH ---
 app.get('/api/history', async (req, res) => {
   try {
-    const history = await History.find().sort({ createdAt: -1 });
+    const { limit, search } = req.query;
+    let filter = {};
+
+    // Lọc theo tên học sinh (fullname) hoặc tên tài khoản (username)
+    if (search && search.trim() !== '') {
+      const regex = new RegExp(search.trim(), 'i');
+      filter = {
+        $or: [
+          { fullname: regex },
+          { username: regex }
+        ]
+      };
+    }
+
+    let query = History.find(filter).sort({ createdAt: -1 });
+
+    if (limit && !isNaN(Number(limit))) {
+      query = query.limit(Number(limit));
+    }
+
+    const history = await query;
     res.json(history);
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
