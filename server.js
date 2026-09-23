@@ -1,5 +1,4 @@
-// server.js - Đã nâng cấp hoàn toàn sang MongoDB Atlas (Mongoose)
-
+// server v2.js - Đã nâng cấp JWT Middleware Bảo mật
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -34,12 +33,11 @@ if (!MONGODB_URI) {
 mongoose.connect(MONGODB_URI)
   .then(() => {
     console.log('✅ Đã kết nối thành công tới MongoDB Atlas!');
-    initDefaultAdmin(); // Tạo tài khoản admin mặc định nếu chưa có
+    initDefaultAdmin();
   })
   .catch(err => console.error('❌ Lỗi kết nối MongoDB:', err));
 
-
-// --- 2. ĐỊNH NGHĨA SCHEMAS & MODELS ---
+// --- 2. SCHEMAS & MODELS ---
 const UserSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
   fullname: { type: String, default: '' },
@@ -50,7 +48,6 @@ const UserSchema = new mongoose.Schema({
   inventory: { type: [String], default: [] }
 }, { timestamps: true });
 
-// Cập nhật ExamSchema: Bổ sung subject và grade
 const ExamSchema = new mongoose.Schema({
   examCode: { type: String, required: true, unique: true },
   subject: { type: String, default: 'Toán' },
@@ -83,12 +80,36 @@ const Exam = mongoose.model('Exam', ExamSchema);
 const History = mongoose.model('History', HistorySchema);
 const UI = mongoose.model('UI', UISchema);
 
+// --- 3. MIDDLEWARE XÁC THỰC JWT & QUYỀN ADMIN ---
+function verifyToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
-// --- 3. KHỞI TẠO VÀ ĐỒNG BỘ TÀI KHOẢN ADMIN MẶC ĐỊNH ---
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'Yêu cầu Token xác thực!' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(403).json({ success: false, message: 'Token hết hạn hoặc không hợp lệ!' });
+    }
+    req.user = decoded;
+    next();
+  });
+}
+
+function verifyAdmin(req, res, next) {
+  if (req.user && req.user.role === 'admin') {
+    next();
+  } else {
+    return res.status(403).json({ success: false, message: 'Quyền truy cập bị từ chối! Chỉ dành cho Admin.' });
+  }
+}
+
+// --- 4. KHỞI TẠO TÀI KHOẢN ADMIN ---
 async function initDefaultAdmin() {
   try {
     const existingAdmin = await User.findOne({ username: 'admin' });
-    
     if (!existingAdmin) {
       const hash = await bcrypt.hash('admin123', 10);
       await User.create({
@@ -98,8 +119,6 @@ async function initDefaultAdmin() {
         role: 'admin'
       });
       console.log('👑 Đã tạo mới tài khoản Admin mặc định (user: admin / pass: admin123)');
-    } else {
-      console.log('👑 Tài khoản Admin đã tồn tại, giữ nguyên mật khẩu hiện tại.');
     }
   } catch (e) {
     console.error('Lỗi khi khởi tạo Admin mặc định:', e);
@@ -117,13 +136,11 @@ function sanitizeUserForClient(user) {
   };
 }
 
+// --- 5. CÁC API ENDPOINTS ---
 
-// --- 4. CÁC API ENDPOINTS ---
-
-// Health Check
+// Public Routes
 app.get('/api/health', (req, res) => res.json({ success: true }));
 
-// Lấy UI Cấu hình
 app.get('/api/ui', async (req, res) => {
   try {
     let ui = await UI.findOne();
@@ -134,7 +151,6 @@ app.get('/api/ui', async (req, res) => {
   }
 });
 
-// Đăng ký tài khoản Học viên
 app.post('/api/register', async (req, res) => {
   try {
     const { fullname, username, password } = req.body;
@@ -164,7 +180,6 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Đăng nhập (Học sinh / Admin)
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password, role } = req.body;
@@ -195,12 +210,12 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Đổi mật khẩu
-app.post('/api/change-password', async (req, res) => {
+// Protected Route: Đổi mật khẩu
+app.post('/api/change-password', verifyToken, async (req, res) => {
   try {
     const { username, oldPassword, newPassword } = req.body;
-    if (!username || !oldPassword || !newPassword) {
-      return res.status(400).json({ success: false, message: 'Thiếu thông tin mật khẩu!' });
+    if (req.user.username !== username) {
+      return res.status(403).json({ success: false, message: 'Không có quyền đổi mật khẩu tài khoản khác!' });
     }
 
     const user = await User.findOne({ username });
@@ -219,8 +234,6 @@ app.post('/api/change-password', async (req, res) => {
 });
 
 // --- API QUẢN LÝ ĐỀ THI ---
-
-// Cập nhật: Lấy danh sách thông tin tóm tắt đề thi (gồm mã đề, môn học, khối lớp, thời gian)
 app.get('/api/exams', async (req, res) => {
   try {
     const exams = await Exam.find({}, 'examCode subject grade timeLimit');
@@ -230,7 +243,6 @@ app.get('/api/exams', async (req, res) => {
   }
 });
 
-// Lấy chi tiết câu hỏi theo mã đề
 app.get('/api/exams/:code', async (req, res) => {
   try {
     const exam = await Exam.findOne({ examCode: req.params.code });
@@ -241,8 +253,8 @@ app.get('/api/exams/:code', async (req, res) => {
   }
 });
 
-// Cập nhật: Lưu bộ đề thi mới (Nhận thêm subject và grade từ req.body)
-app.post('/api/exams', async (req, res) => {
+// Protected (Admin): Tạo bộ đề
+app.post('/api/exams', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { examCode, subject, grade, timeLimit, questions } = req.body;
     if (!examCode || !Array.isArray(questions)) {
@@ -266,8 +278,8 @@ app.post('/api/exams', async (req, res) => {
   }
 });
 
-// Xóa đề thi (Admin)
-app.delete('/api/exams/:code', async (req, res) => {
+// Protected (Admin): Xóa đề thi
+app.delete('/api/exams/:code', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await Exam.deleteOne({ examCode: req.params.code });
     if (result.deletedCount === 0) {
@@ -280,7 +292,8 @@ app.delete('/api/exams/:code', async (req, res) => {
 });
 
 // --- API NỘP BÀI THI & LỊCH SỬ ---
-app.post('/api/submit', async (req, res) => {
+// Protected: Nộp bài thi
+app.post('/api/submit', verifyToken, async (req, res) => {
   try {
     const { username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion } = req.body;
 
@@ -295,7 +308,6 @@ app.post('/api/submit', async (req, res) => {
       earnedMcion: Number(earnedMcion) || 0
     });
 
-    // Tự động cộng Mcion thưởng cho học sinh
     if (earnedMcion) {
       await User.findOneAndUpdate(
         { username },
@@ -309,7 +321,6 @@ app.post('/api/submit', async (req, res) => {
   }
 });
 
-// Lấy lịch sử tất cả lượt làm bài
 app.get('/api/history', async (req, res) => {
   try {
     const history = await History.find().sort({ createdAt: -1 });
@@ -320,7 +331,6 @@ app.get('/api/history', async (req, res) => {
 });
 
 // --- API QUẢN LÝ MCION & CỬA HÀNG ---
-// Lấy số dư Mcion và kho Avatar đã mua
 app.get('/api/mcion/:username', async (req, res) => {
   try {
     const user = await User.findOne({ username: req.params.username });
@@ -331,8 +341,8 @@ app.get('/api/mcion/:username', async (req, res) => {
   }
 });
 
-// Cấp/Trừ Mcion cho học sinh (Admin)
-app.post('/api/mcion/grant', async (req, res) => {
+// Protected (Admin): Cấp Mcion
+app.post('/api/mcion/grant', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { username, amount } = req.body;
     const user = await User.findOneAndUpdate(
@@ -348,8 +358,8 @@ app.post('/api/mcion/grant', async (req, res) => {
   }
 });
 
-// Mua item/Avatar bằng Mcion
-app.post('/api/mcion/buy', async (req, res) => {
+// Protected: Mua vật phẩm
+app.post('/api/mcion/buy', verifyToken, async (req, res) => {
   try {
     const { username, itemName, cost, avatarUrl } = req.body;
     const user = await User.findOne({ username });
@@ -374,8 +384,8 @@ app.post('/api/mcion/buy', async (req, res) => {
   }
 });
 
-// Đổi Avatar từ kho đã mua
-app.post('/api/update-avatar', async (req, res) => {
+// Protected: Cập nhật Avatar
+app.post('/api/update-avatar', verifyToken, async (req, res) => {
   try {
     const { username, avatar, avatarUrl } = req.body;
     const user = await User.findOne({ username });
@@ -390,24 +400,8 @@ app.post('/api/update-avatar', async (req, res) => {
   }
 });
 
-// Route Reset Mật khẩu Admin khẩn cấp
-app.get('/reset-admin-password', async (req, res) => {
-  try {
-    const hash = await bcrypt.hash('admin123', 10);
-    await User.findOneAndUpdate(
-      { username: 'admin' },
-      { passwordHash: hash, role: 'admin' },
-      { new: true, upsert: true }
-    );
-    res.send('✅ Đã reset mật khẩu Admin về: admin123 thành công!');
-  } catch (e) {
-    res.send('❌ Lỗi: ' + e.message);
-  }
-});
-
-// Fallback Route
 app.use((req, res) => res.status(404).json({ success: false, message: 'API Route không tồn tại' }));
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server đang chạy trên cổng ${PORT}`);
+  console.log(`🚀 Server v2 đang chạy trên cổng ${PORT}`);
 });
