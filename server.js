@@ -1,4 +1,4 @@
-// server v2.js - Đã nâng cấp JWT Middleware Bảo mật & API Lịch sử theo Tab/Bộ lọc
+// server.js - Đã sửa lỗi bảo mật, Regex Injection & Xác thực JWT
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -12,7 +12,7 @@ try {
   try {
     bcrypt = require('bcrypt');
   } catch (err) {
-    console.error('Thiếu thư viện bcryptjs hoặc bcrypt.');
+    console.error('❌ Thiếu thư viện bcryptjs hoặc bcrypt.');
     process.exit(1);
   }
 }
@@ -25,17 +25,33 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 app.use(cors());
 
-// --- 1. KẾT NỐI MONGODB ATLAS ---
-if (!MONGODB_URI) {
-  console.error('❌ Thiếu biến môi trường MONGODB_URI trên Render!');
+// --- HELPER FUNCTIONS ---
+function escapeRegex(text) {
+  return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
 }
 
-mongoose.connect(MONGODB_URI)
-  .then(() => {
-    console.log('✅ Đã kết nối thành công tới MongoDB Atlas!');
-    initDefaultAdmin();
-  })
-  .catch(err => console.error('❌ Lỗi kết nối MongoDB:', err));
+function sanitizeUserForClient(user) {
+  return {
+    username: user.username,
+    fullname: user.fullname,
+    role: user.role,
+    avatar: user.avatar || '',
+    mcion: user.mcion || 0,
+    inventory: user.inventory || []
+  };
+}
+
+// --- 1. KẾT NỐI MONGODB ATLAS ---
+if (!MONGODB_URI) {
+  console.error('❌ Thiếu biến môi trường MONGODB_URI!');
+} else {
+  mongoose.connect(MONGODB_URI)
+    .then(() => {
+      console.log('✅ Đã kết nối thành công tới MongoDB Atlas!');
+      initDefaultAdmin();
+    })
+    .catch(err => console.error('❌ Lỗi kết nối MongoDB:', err));
+}
 
 // --- 2. SCHEMAS & MODELS ---
 const UserSchema = new mongoose.Schema({
@@ -125,17 +141,6 @@ async function initDefaultAdmin() {
   }
 }
 
-function sanitizeUserForClient(user) {
-  return {
-    username: user.username,
-    fullname: user.fullname,
-    role: user.role,
-    avatar: user.avatar || '',
-    mcion: user.mcion || 0,
-    inventory: user.inventory || []
-  };
-}
-
 // --- 5. CÁC API ENDPOINTS ---
 
 // Public Routes
@@ -158,15 +163,15 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Thiếu thông tin đăng ký!' });
     }
 
-    const exists = await User.findOne({ username });
+    const exists = await User.findOne({ username: username.trim() });
     if (exists) {
       return res.status(409).json({ success: false, message: 'Tên đăng nhập đã tồn tại!' });
     }
 
     const hash = await bcrypt.hash(password, 10);
     await User.create({
-      username,
-      fullname,
+      username: username.trim(),
+      fullname: fullname.trim(),
       passwordHash: hash,
       role: 'student',
       avatar: '',
@@ -187,7 +192,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Vui lòng điền đủ thông tin!' });
     }
 
-    const user = await User.findOne({ username });
+    const user = await User.findOne({ username: username.trim() });
     if (!user) {
       return res.status(401).json({ success: false, message: 'Tài khoản không tồn tại!' });
     }
@@ -295,7 +300,8 @@ app.delete('/api/exams/:code', verifyToken, verifyAdmin, async (req, res) => {
 // Protected: Nộp bài thi
 app.post('/api/submit', verifyToken, async (req, res) => {
   try {
-    const { username, fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion } = req.body;
+    const username = req.user.username; // Dùng username xác thực từ Token để an toàn
+    const { fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion } = req.body;
 
     const hist = await History.create({
       username,
@@ -321,15 +327,15 @@ app.post('/api/submit', verifyToken, async (req, res) => {
   }
 });
 
-// --- CẬP NHẬT: LẤY LỊCH SỬ CÓ HỖ TRỢ ĐẾM GIỚI HẠN VÀ LỌC THEO TÊN HỌC SINH ---
+// GET /api/history - An toàn chống Regex Injection
 app.get('/api/history', async (req, res) => {
   try {
     const { limit, search } = req.query;
     let filter = {};
 
-    // Lọc theo tên học sinh (fullname) hoặc tên tài khoản (username)
     if (search && search.trim() !== '') {
-      const regex = new RegExp(search.trim(), 'i');
+      const safeSearch = escapeRegex(search.trim());
+      const regex = new RegExp(safeSearch, 'i');
       filter = {
         $or: [
           { fullname: regex },
@@ -382,7 +388,9 @@ app.post('/api/mcion/grant', verifyToken, verifyAdmin, async (req, res) => {
 // Protected: Mua vật phẩm
 app.post('/api/mcion/buy', verifyToken, async (req, res) => {
   try {
-    const { username, itemName, cost, avatarUrl } = req.body;
+    const username = req.user.username; // Dùng username từ Token
+    const { itemName, cost, avatarUrl } = req.body;
+    
     const user = await User.findOne({ username });
     if (!user) return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản!' });
 
@@ -408,7 +416,9 @@ app.post('/api/mcion/buy', verifyToken, async (req, res) => {
 // Protected: Cập nhật Avatar
 app.post('/api/update-avatar', verifyToken, async (req, res) => {
   try {
-    const { username, avatar, avatarUrl } = req.body;
+    const username = req.user.username; // Dùng username từ Token
+    const { avatar, avatarUrl } = req.body;
+
     const user = await User.findOne({ username });
     if (!user) return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản!' });
 
@@ -424,5 +434,5 @@ app.post('/api/update-avatar', verifyToken, async (req, res) => {
 app.use((req, res) => res.status(404).json({ success: false, message: 'API Route không tồn tại' }));
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server v2 đang chạy trên cổng ${PORT}`);
+  console.log(`🚀 Server đang chạy trên cổng ${PORT}`);
 });
