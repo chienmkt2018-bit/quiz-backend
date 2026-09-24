@@ -163,14 +163,15 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Thiếu thông tin đăng ký!' });
     }
 
-    const exists = await User.findOne({ username: username.trim() });
+    const safeUsername = username.trim().toLowerCase(); // Xử lý chuẩn hoá chữ thường
+    const exists = await User.findOne({ username: safeUsername });
     if (exists) {
       return res.status(409).json({ success: false, message: 'Tên đăng nhập đã tồn tại!' });
     }
 
     const hash = await bcrypt.hash(password, 10);
     await User.create({
-      username: username.trim(),
+      username: safeUsername,
       fullname: fullname.trim(),
       passwordHash: hash,
       role: 'student',
@@ -192,7 +193,8 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Vui lòng điền đủ thông tin!' });
     }
 
-    const user = await User.findOne({ username: username.trim() });
+    const safeUsername = username.trim().toLowerCase(); // Xử lý chuẩn hoá chữ thường
+    const user = await User.findOne({ username: safeUsername });
     if (!user) {
       return res.status(401).json({ success: false, message: 'Tài khoản không tồn tại!' });
     }
@@ -297,27 +299,32 @@ app.delete('/api/exams/:code', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // --- API NỘP BÀI THI & LỊCH SỬ ---
-// Protected: Nộp bài thi
+// Protected: Nộp bài thi (BẢO MẬT: Backend tự tính toán)
 app.post('/api/submit', verifyToken, async (req, res) => {
   try {
-    const username = req.user.username; // Dùng username xác thực từ Token để an toàn
-    const { fullname, examCode, correctCount, totalQuestions, score, time, earnedMcion } = req.body;
+    const username = req.user.username; 
+    const { fullname, examCode, correctCount, totalQuestions, time } = req.body;
+
+    const safeCorrectCount = Number(correctCount) || 0;
+    const safeTotalQuestions = Number(totalQuestions) || 0;
+    const calculatedScore = safeTotalQuestions > 0 ? Number(((safeCorrectCount / safeTotalQuestions) * 10).toFixed(1)) : 0;
+    const actualEarnedMcion = safeCorrectCount * 10; 
 
     const hist = await History.create({
       username,
       fullname: fullname || username,
       examCode,
-      correctCount: Number(correctCount) || 0,
-      totalQuestions: Number(totalQuestions) || 0,
-      score: Number(score) || 0,
+      correctCount: safeCorrectCount,
+      totalQuestions: safeTotalQuestions,
+      score: calculatedScore,
       time: time || new Date().toLocaleString('vi-VN'),
-      earnedMcion: Number(earnedMcion) || 0
+      earnedMcion: actualEarnedMcion
     });
 
-    if (earnedMcion) {
+    if (actualEarnedMcion > 0) {
       await User.findOneAndUpdate(
         { username },
-        { $inc: { mcion: Number(earnedMcion) } }
+        { $inc: { mcion: actualEarnedMcion } }
       );
     }
 
