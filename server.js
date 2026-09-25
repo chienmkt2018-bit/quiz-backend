@@ -7,10 +7,12 @@ const { v4: uuidv4 } = require('uuid');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 let bcrypt;
-try { bcrypt = require('bcryptjs'); } 
-catch (e) { try { bcrypt = require('bcrypt'); } catch (err) { process.exit(1); } }
+try {
+  bcrypt = require('bcryptjs');
+} catch (e) {
+  bcrypt = require('bcrypt');
+}
 
-// Cấu hình Gemini AI với API Key của bạn
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AQ.Ab8RN6JC0dRzi4DLXrOLKsLWEw9ilCpek3XIxozeXvxQVM8uwQ';
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
@@ -23,16 +25,19 @@ app.use(express.json({ limit: '10mb' }));
 app.use(cors());
 
 // --- HELPER FUNCTIONS ---
-function escapeRegex(text) { return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'); }
-function sanitizeUserForClient(user) {
-  return { username: user.username, fullname: user.fullname, role: user.role, avatar: user.avatar || '', mcion: user.mcion || 0, inventory: user.inventory || [] };
+function escapeRegex(text) {
+  return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
 }
 
-// --- KẾT NỐI MONGODB ATLAS ---
-if (MONGODB_URI) {
-  mongoose.connect(MONGODB_URI)
-    .then(() => { console.log('✅ Đã kết nối MongoDB Atlas'); initDefaultAdmin(); })
-    .catch(err => console.error('❌ Lỗi kết nối MongoDB:', err));
+function sanitizeUserForClient(user) {
+  return {
+    username: user.username,
+    fullname: user.fullname,
+    role: user.role,
+    avatar: user.avatar || '',
+    mcion: user.mcion || 0,
+    inventory: user.inventory || []
+  };
 }
 
 // --- SCHEMAS & MODELS ---
@@ -64,7 +69,7 @@ const HistorySchema = new mongoose.Schema({
   score: { type: Number, default: 0 },
   essayDetails: { type: Array, default: [] },
   regradeRequested: { type: Boolean, default: false },
-  regradeStatus: { type: String, default: 'none' }, // 'none', 'pending', 'resolved'
+  regradeStatus: { type: String, default: 'none' },
   time: { type: String, default: '' },
   earnedMcion: { type: Number, default: 0 }
 }, { timestamps: true });
@@ -73,7 +78,14 @@ const User = mongoose.model('User', UserSchema);
 const Exam = mongoose.model('Exam', ExamSchema);
 const History = mongoose.model('History', HistorySchema);
 
-// --- MIDDLEWARE ---
+// --- MIDDLEWARES & HELPERS ---
+function checkDbConnection(req, res, next) {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Chưa kết nối cơ sở dữ liệu MongoDB! Vui lòng cấu hình MONGODB_URI.' });
+  }
+  next();
+}
+
 function verifyToken(req, res, next) {
   const token = req.headers['authorization']?.split(' ')[1];
   if (!token) return res.status(401).json({ success: false, message: 'Yêu cầu Token xác thực!' });
@@ -85,7 +97,7 @@ function verifyToken(req, res, next) {
 }
 
 function verifyAdmin(req, res, next) {
-  if (req.user?.role === 'admin') next(); 
+  if (req.user?.role === 'admin') next();
   else res.status(403).json({ success: false, message: 'Chỉ Admin mới có quyền thực hiện!' });
 }
 
@@ -97,27 +109,34 @@ async function initDefaultAdmin() {
       await User.create({ username: 'admin', fullname: 'Quản Trị Viên', passwordHash: hash, role: 'admin' });
       console.log('👤 Đã tạo tài khoản Admin mặc định (admin / admin123)');
     }
-  } catch(e) { console.error(e); }
+  } catch (e) {
+    console.error('Lỗi khởi tạo Admin:', e.message);
+  }
 }
 
-// --- API XÁC THỰC (AUTH) ---
-app.post('/api/register', async (req, res) => {
+// --- API AUTH ---
+app.post('/api/register', checkDbConnection, async (req, res) => {
   try {
     const { fullname, username, password } = req.body;
     if (!username || !password) return res.status(400).json({ success: false, message: 'Thiếu thông tin đăng ký!' });
+    
     const safeUsername = username.trim().toLowerCase();
     const exists = await User.findOne({ username: safeUsername });
     if (exists) return res.status(409).json({ success: false, message: 'Tên đăng nhập đã tồn tại!' });
+    
     const hash = await bcrypt.hash(password, 10);
     await User.create({ username: safeUsername, fullname: fullname || safeUsername, passwordHash: hash, role: 'student' });
     res.json({ success: true, message: 'Đăng ký tài khoản thành công!' });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', checkDbConnection, async (req, res) => {
   try {
     const { username, password, role } = req.body;
     if (!username || !password) return res.status(400).json({ success: false, message: 'Vui lòng nhập tên đăng nhập và mật khẩu!' });
+    
     const safeUsername = username.trim().toLowerCase();
     const user = await User.findOne({ username: safeUsername });
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
@@ -128,49 +147,59 @@ app.post('/api/login', async (req, res) => {
     }
     const token = jwt.sign({ username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ success: true, token, ...sanitizeUserForClient(user) });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
 // --- API QUẢN LÝ ĐỀ THI ---
-app.get('/api/exams', async (req, res) => {
+app.get('/api/exams', checkDbConnection, async (req, res) => {
   try {
     const exams = await Exam.find({}, 'examCode subject grade timeLimit questions');
     res.json(exams);
-  } catch(e) { res.status(500).json([]); }
+  } catch (e) {
+    res.status(500).json([]);
+  }
 });
 
-app.get('/api/exams/:code', async (req, res) => {
+app.get('/api/exams/:code', checkDbConnection, async (req, res) => {
   try {
     const exam = await Exam.findOne({ examCode: req.params.code });
     if (!exam) return res.status(404).json({ success: false, message: 'Không tìm thấy đề thi!' });
     res.json(exam);
-  } catch(e) { res.status(500).json({ success: false, message: e.message }); }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
-app.post('/api/exams', verifyToken, verifyAdmin, async (req, res) => {
+app.post('/api/exams', checkDbConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { examCode, subject, grade, timeLimit, questions } = req.body;
     if (!examCode || !questions || !questions.length) {
       return res.status(400).json({ success: false, message: 'Mã đề thi và danh sách câu hỏi không được để trống!' });
     }
     await Exam.findOneAndUpdate(
-      { examCode }, 
-      { subject: subject || 'Tổng hợp', grade: grade || 'Tất cả', timeLimit: Number(timeLimit) || 15, questions }, 
+      { examCode },
+      { subject: subject || 'Tổng hợp', grade: grade || 'Tất cả', timeLimit: Number(timeLimit) || 15, questions },
       { upsert: true, new: true }
     );
     res.json({ success: true, message: 'Đã lưu đề thi thành công!' });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
-app.delete('/api/exams/:code', verifyToken, verifyAdmin, async (req, res) => {
+app.delete('/api/exams/:code', checkDbConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
     await Exam.deleteOne({ examCode: req.params.code });
     res.json({ success: true, message: 'Đã xóa đề thi!' });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
 // --- API NỘP BÀI THI & CHẤM AI ---
-app.post('/api/submit', verifyToken, async (req, res) => {
+app.post('/api/submit', checkDbConnection, verifyToken, async (req, res) => {
   try {
     const { examCode, answers, time } = req.body;
     const username = req.user.username;
@@ -249,7 +278,7 @@ Thang điểm tối đa cho câu này: ${maxScore}
 });
 
 // --- API LỊCH SỬ THI & PHÚC KHẢO ---
-app.get('/api/history', verifyToken, async (req, res) => {
+app.get('/api/history', checkDbConnection, verifyToken, async (req, res) => {
   try {
     let filter = {};
     if (req.user.role !== 'admin') {
@@ -260,23 +289,27 @@ app.get('/api/history', verifyToken, async (req, res) => {
     }
     const histories = await History.find(filter).sort({ createdAt: -1 }).limit(Number(req.query.limit) || 100);
     res.json(histories);
-  } catch(e) { res.status(500).json([]); }
+  } catch (e) {
+    res.status(500).json([]);
+  }
 });
 
-app.post('/api/regrade', verifyToken, async (req, res) => {
+app.post('/api/regrade', checkDbConnection, verifyToken, async (req, res) => {
   try {
     const { historyId } = req.body;
     const hist = await History.findOneAndUpdate(
-      { id: historyId, username: req.user.username }, 
+      { id: historyId, username: req.user.username },
       { regradeRequested: true, regradeStatus: 'pending' },
       { new: true }
     );
     if (hist) res.json({ success: true, message: "Đã gửi yêu cầu phúc khảo tới giáo viên!" });
     else res.status(404).json({ success: false, message: "Không tìm thấy lịch sử làm bài!" });
-  } catch(e) { res.status(500).json({ success: false, message: e.message }); }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
-app.post('/api/regrade/resolve', verifyToken, verifyAdmin, async (req, res) => {
+app.post('/api/regrade/resolve', checkDbConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { historyId, newScore } = req.body;
     const hist = await History.findOneAndUpdate(
@@ -286,31 +319,51 @@ app.post('/api/regrade/resolve', verifyToken, verifyAdmin, async (req, res) => {
     );
     if (hist) res.json({ success: true, message: "Đã cập nhật điểm phúc khảo thành công!" });
     else res.status(404).json({ success: false, message: "Không tìm thấy bản ghi!" });
-  } catch(e) { res.status(500).json({ success: false, message: e.message }); }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
 // --- API QUẢN LÝ NGƯỜI DÙNG & MCION ---
-app.get('/api/users', verifyToken, verifyAdmin, async (req, res) => {
+app.get('/api/users', checkDbConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
     const users = await User.find({}, 'username fullname role mcion createdAt');
     res.json(users);
-  } catch(e) { res.status(500).json([]); }
+  } catch (e) {
+    res.status(500).json([]);
+  }
 });
 
-app.get('/api/mcion/:username', verifyToken, async (req, res) => {
+app.get('/api/mcion/:username', checkDbConnection, verifyToken, async (req, res) => {
   try {
     const user = await User.findOne({ username: req.params.username });
     res.json({ success: !!user, balance: user ? user.mcion : 0 });
-  } catch(e) { res.status(500).json({ success: false, balance: 0 }); }
+  } catch (e) {
+    res.status(500).json({ success: false, balance: 0 });
+  }
 });
 
-app.post('/api/mcion/update', verifyToken, verifyAdmin, async (req, res) => {
+app.post('/api/mcion/update', checkDbConnection, verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { username, amount } = req.body;
     const user = await User.findOneAndUpdate({ username }, { $inc: { mcion: Number(amount) } }, { new: true });
     if (user) res.json({ success: true, message: `Đã cập nhật Mcion cho ${username}. Số dư mới: ${user.mcion}` });
     else res.status(404).json({ success: false, message: "Không tìm thấy người dùng!" });
-  } catch(e) { res.status(500).json({ success: false, message: e.message }); }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
-app.listen(PORT, () => console.log(`🚀 Server đang chạy tại cổng ${PORT}`));
+// --- KHỞI ĐỘNG SERVER ---
+if (MONGODB_URI) {
+  mongoose.connect(MONGODB_URI)
+    .then(() => {
+      console.log('✅ Đã kết nối MongoDB Atlas');
+      initDefaultAdmin();
+    })
+    .catch(err => console.error('❌ Lỗi kết nối MongoDB:', err.message));
+} else {
+  console.warn('⚠️ CẢNH BÁO: MONGODB_URI chưa được thiết lập trong biến môi trường (.env)!');
+}
+
+app.listen(PORT, () => console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`));
